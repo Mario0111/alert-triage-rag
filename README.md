@@ -1,0 +1,85 @@
+# alert-triage-rag
+
+A retrieval-augmented triage assistant for SOC/MDR alerts. An analyst describes
+an alert in natural language; the system retrieves relevant **MITRE ATT&CK**
+techniques and internal **runbook** steps, then produces a structured, grounded
+triage verdict (JSON) with **citations** back to the source material.
+
+Built deliberately *without* orchestration frameworks (no LangChain /
+LlamaIndex) — retrieval and prompting are hand-written so every step is
+explainable.
+
+## Architecture
+
+Two phases:
+
+1. **Ingestion** (`ingest.py`) — load corpus → chunk → embed locally → persist
+   to Chroma. Run once, or whenever the corpus changes.
+2. **Query** (`query.py`) — embed alert text → retrieve top-k chunks → build a
+   grounded prompt → call Claude → validate JSON against the schema.
+
+```
+corpus/attack/*.json ─┐
+                      ├─ ingest.py ──► ./chroma_db ──► query.py ──► triage verdict (JSON)
+corpus/runbooks/*.md ─┘                                   ▲
+                                                    alert description
+```
+
+**Corpus**
+- MITRE ATT&CK Enterprise (STIX/JSON), chunked **one chunk per technique**
+  (id + name + description + detection kept together).
+- Hand-written runbooks (`corpus/runbooks/*.md`), chunked with a generic
+  character splitter.
+
+**Stack:** Python 3.11+ · `sentence-transformers` (`bge-small-en-v1.5`, local) ·
+`chromadb` · `anthropic` (Claude) · `pydantic` v2. CLI-first.
+
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# Anthropic API key for the query phase
+export ANTHROPIC_API_KEY=sk-ant-...   # Windows (PowerShell): $env:ANTHROPIC_API_KEY="..."
+```
+
+Place the ATT&CK Enterprise STIX/JSON bundle at
+`corpus/attack/enterprise-attack.json`, and write runbooks under
+`corpus/runbooks/`.
+
+## Usage
+
+**Ingest** (build the vector store):
+
+```bash
+python ingest.py
+# options: --attack-file --runbooks-dir --db-dir --collection --embed-model --batch-size
+```
+
+**Query** (triage an alert):
+
+```bash
+python query.py "Multiple failed logons followed by a successful logon from a new country, then a PowerShell download cradle on the host."
+# options: --top-k --db-dir --collection --gen-model
+```
+
+Output is a structured triage verdict (JSON) with citations back to the ATT&CK
+techniques and runbook steps used.
+
+## Demo
+
+<!-- TODO: add a screenshot of a real triage run here -->
+_Demo screenshot coming soon._
+
+## Project layout
+
+| File | Purpose |
+| --- | --- |
+| `ingest.py` | Ingestion pipeline (plumbing). |
+| `stix.py` | ATT&CK STIX/JSON → flat `Technique` records. |
+| `chunk.py` | Chunking strategy (per-technique + runbooks). |
+| `retrieve.py` | Top-k retrieval. |
+| `query.py` | Query pipeline + grounding prompt. |
+| `schema.py` | Pydantic output contract for the verdict. |
