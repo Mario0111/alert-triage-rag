@@ -33,12 +33,20 @@ class Technique:
             detection-strategy and analytic objects (strategy name, analytic
             descriptions, platforms, and log sources). Empty string if ATT&CK
             provides no detection strategy for this technique.
+        platforms: Platforms the technique applies to (e.g. ``("Windows",)``),
+            from ``x_mitre_platforms``. Useful for judging relevance to an
+            alert's host OS. Empty if unspecified.
+        tactics: ATT&CK tactics (kill-chain phases) the technique belongs to,
+            e.g. ``("privilege-escalation", "defense-evasion")``. Empty if
+            unspecified.
     """
 
     attack_id: str
     name: str
     description: str
     detection: str
+    platforms: tuple[str, ...] = ()
+    tactics: tuple[str, ...] = ()
 
 
 def _attack_id(external_references: list[dict]) -> str | None:
@@ -51,6 +59,19 @@ def _attack_id(external_references: list[dict]) -> str | None:
         if ref.get("source_name") == "mitre-attack":
             return ref.get("external_id")
     return None
+
+
+def _tactics(kill_chain_phases: list[dict]) -> tuple[str, ...]:
+    """Extract ATT&CK tactic names from a technique's kill-chain phases.
+
+    Only phases in the ``mitre-attack`` kill chain are real ATT&CK tactics;
+    other kill chains (if present) are ignored.
+    """
+    return tuple(
+        phase["phase_name"]
+        for phase in kill_chain_phases
+        if phase.get("kill_chain_name") == "mitre-attack" and phase.get("phase_name")
+    )
 
 
 def _detection_index(
@@ -222,6 +243,8 @@ def parse_techniques(stix_path: str | Path) -> list[Technique]:
                 detection=_format_detection(
                     detection_index.get(obj["id"], []), by_id
                 ),
+                platforms=tuple(obj.get("x_mitre_platforms") or ()),
+                tactics=_tactics(obj.get("kill_chain_phases", [])),
             )
         )
 
