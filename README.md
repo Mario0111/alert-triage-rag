@@ -45,9 +45,20 @@ pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...   # Windows (PowerShell): $env:ANTHROPIC_API_KEY="..."
 ```
 
-Place the ATT&CK Enterprise STIX/JSON bundle at
-`corpus/attack/enterprise-attack.json`, and write runbooks under
-`corpus/runbooks/`.
+### Get the ATT&CK corpus
+
+The MITRE ATT&CK Enterprise STIX/JSON bundle is large (~51 MB), public, and
+regenerable, so it is **not** committed to this repo. Download it once
+(pinned to **Enterprise ATT&CK v19.1**, the version this project was built
+against):
+
+```bash
+curl -sSL -o corpus/attack/enterprise-attack.json \
+  https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/enterprise-attack/enterprise-attack-19.1.json
+```
+
+For the latest release instead, drop the version suffix
+(`enterprise-attack.json`). Then write runbooks under `corpus/runbooks/`.
 
 ## Usage
 

@@ -6,6 +6,10 @@ chroma_db/
 .env
 .env.*
 
+# ATT&CK bundle: large (~51 MB), public, regenerable — not vendored.
+# Download it with the command in the README (see "Setup").
+corpus/attack/*.json
+
 # --- Python ---
 __pycache__/
 *.py[cod]
