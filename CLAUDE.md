@@ -21,10 +21,21 @@ Two phases:
    build grounded prompt -> call Claude -> validate JSON against schema.
 
 Corpus:
-- MITRE ATT&CK Enterprise (STIX/JSON) -> chunked **per technique**
-  (id + name + description + detection kept together as one chunk).
-- Hand-written runbooks (markdown, in `corpus/runbooks/`) -> chunked
-  with a generic character splitter.
+- MITRE ATT&CK Enterprise (STIX/JSON) -> chunked **per technique field**:
+  description and detection are embedded as *separate* chunks (each split
+  further if it exceeds the embedder's 512-token window), every chunk tagged
+  with the same `attack_id`. This keeps detection text — which alert queries
+  often echo — from being silently truncated off the tail of one oversized
+  chunk.
+- Hand-written runbooks (markdown, in `corpus/runbooks/`) -> same
+  token-budgeted splitting, every chunk tagged with the runbook filename
+  (`source`) and its `chunk_index`.
+- Both types are reassembled at retrieval: `retrieve.py` merges sibling
+  chunks of the same document (key: `attack_id` for techniques, `source`
+  for runbooks) back into one complete, citable unit. The "one citable
+  document per result" guarantee lives in **retrieval**, not in the chunk
+  shape — which is also why chunks carry no overlap: merge, not overlap,
+  is the context mechanism.
 
 ## Stack (fixed — do not substitute)
 

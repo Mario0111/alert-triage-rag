@@ -44,16 +44,27 @@ Author-owned data work.
       brute-force/cred stuffing, lateral movement, data exfil, etc.)
 Done when: corpus is on disk and STIX helper parses it without errors.
 
-### Phase 3 — Chunking  [ ]
-Author-owned. Write chunk.py. ATT&CK -> one chunk per technique (id +
-name + description + detection together). Runbooks -> generic character
-splitter (~500 tok, ~50 overlap). Done when: ingest.py runs and populates
-Chroma; chunk count looks sane; spot-check a chunk maps to one technique.
+### Phase 3 — Chunking  [~]
+Write chunk.py. ATT&CK -> description and detection embedded as *separate*
+chunks (each split further past the 512-token window), all sharing the
+technique's attack_id for reassembly. Runbooks -> same token-budgeted
+splitter, chunks tagged with the runbook filename + chunk_index for
+reassembly. No overlap anywhere: retrieval-time merge is the context
+mechanism. Done when: ingest.py runs and populates Chroma; chunk count
+looks sane; spot-check that a document's chunks all carry its merge key.
+Token-aware split DONE for both corpus types: pieces budgeted by the real
+bge tokenizer (header/label headroom measured per document, [CLS]/[SEP] +
+margin reserved) with a token-boundary hard-split backstop. Verified for
+techniques: 697 -> 1607 chunks, max 508 tokens, 0 over 512. Char proxy
+retained as the fallback when no tokenizer is passed (tests / quick runs).
+Remaining: run the full ingest end-to-end into Chroma to confirm counts.
 
 ### Phase 4 — Retrieval  [ ]
-Author-owned. Write retrieve.py. Embed query, top-k (start k=5) cosine
-against Chroma, return chunks + their source metadata. Done when: a test
-alert returns relevant techniques I can eyeball as correct.
+Author-owned. Write retrieve.py. Embed query, over-fetch top-k' cosine
+against Chroma, merge sibling chunks by document key (attack_id for
+techniques, runbook filename for runbooks), trim to k, return chunks +
+their source metadata. Done when: a test alert returns relevant,
+reassembled documents I can eyeball as correct.
 
 ### Phase 5 — Grounding + generation  [ ]
 Author-owned prompt; Claude can wire the API call around it. Assemble
@@ -78,6 +89,20 @@ Claude-owned, I review. `python query.py "alert description"` -> pretty
 - Stack locked: bge-small-en-v1.5 (local) / Chroma / Claude API / Pydantic
   / no LangChain. Rationale in CLAUDE.md + writeup.
 - Chunk ATT&CK per-technique so citations map 1:1 to a technique_id.
+- Superseded the above: ATT&CK is now chunked **per field** (description /
+  detection as separate chunks, split again past 512 tokens), each tagged
+  with attack_id. Reason: bge-small-en-v1.5 truncates at 512 tokens and 74%
+  of one-chunk-per-technique chunks exceeded it, so detection text (which
+  alert queries echo) was never embedded. retrieve.py restores the 1:1
+  technique->citation mapping by merging chunks that share an attack_id.
+- ingest.py now rebuilds the Chroma collection from scratch each run (drops
+  it first) so changing the chunk-id scheme can't leave orphaned documents.
+- Runbooks: chose retrieval-time reassembly over chunk overlap. Runbook
+  chunks are token-split like techniques and merged back by filename in
+  retrieve.py, so no overlap is needed (and overlap would duplicate text at
+  the seams of the merged document). Trade-off accepted: a hit on any chunk
+  returns the whole runbook — perfect at today's 2-3 chunks/runbook, worth
+  revisiting if runbooks ever grow much longer.
 
 ## Open questions / parking lot
 

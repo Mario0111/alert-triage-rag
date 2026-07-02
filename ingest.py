@@ -18,12 +18,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import chromadb
+from chromadb.errors import NotFoundError
 from sentence_transformers import SentenceTransformer
 
 import stix
 from chunk import Chunk, chunk_runbook, chunk_techniques
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 # Fixed stack (see CLAUDE.md). bge-small-en-v1.5, run locally.
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -33,24 +38,32 @@ DEFAULT_ATTACK_FILE = "corpus/attack/enterprise-attack.json"
 DEFAULT_RUNBOOKS_DIR = "corpus/runbooks"
 
 
-def load_technique_chunks(attack_file: Path) -> list[Chunk]:
-    """Parse the ATT&CK STIX bundle and chunk it per technique.
+def load_technique_chunks(
+    attack_file: Path, tokenizer: "PreTrainedTokenizerBase"
+) -> list[Chunk]:
+    """Parse the ATT&CK STIX bundle and chunk it per technique field.
 
     Args:
         attack_file: Path to the ATT&CK Enterprise STIX/JSON bundle.
+        tokenizer: The local embedder's tokenizer, forwarded to
+            `chunk.chunk_techniques` so it can size chunks by real token count.
 
     Returns:
-        One chunk per technique (see `chunk.chunk_techniques`).
+        Technique chunks (see `chunk.chunk_techniques`).
     """
     techniques = stix.parse_techniques(attack_file)
-    return chunk_techniques(techniques)
+    return chunk_techniques(techniques, tokenizer)
 
 
-def load_runbook_chunks(runbooks_dir: Path) -> list[Chunk]:
+def load_runbook_chunks(
+    runbooks_dir: Path, tokenizer: "PreTrainedTokenizerBase"
+) -> list[Chunk]:
     """Load every markdown runbook and chunk each one.
 
     Args:
         runbooks_dir: Directory containing hand-written ``*.md`` runbooks.
+        tokenizer: The local embedder's tokenizer, forwarded to
+            `chunk.chunk_runbook` so it can size chunks by real token count.
 
     Returns:
         All runbook chunks, flattened across files. Empty if there are no
@@ -62,7 +75,7 @@ def load_runbook_chunks(runbooks_dir: Path) -> list[Chunk]:
         if not text.strip():
             # An empty runbook file is almost certainly a mistake — say so.
             raise ValueError(f"Runbook {md_path} is empty")
-        chunks.extend(chunk_runbook(text, source=md_path.name))
+        chunks.extend(chunk_runbook(text, source=md_path.name, tokenizer=tokenizer))
     return chunks
 
 
@@ -75,8 +88,9 @@ def embed_and_persist(
     """Embed chunk texts locally and upsert them into the Chroma collection.
 
     Embeddings are L2-normalized so the collection's cosine space behaves as
-    expected for bge-small-en-v1.5. Uses ``upsert`` keyed on the chunk id so a
-    re-ingest replaces rather than duplicates existing chunks.
+    expected for bge-small-en-v1.5. Writes with ``upsert`` keyed on the chunk id
+    (idempotent within a run); orphan-free re-ingests are guaranteed by the
+    caller rebuilding the collection from scratch, not by upsert alone.
 
     Args:
         chunks: Chunks to persist.
@@ -135,18 +149,27 @@ def ingest(
     embedder = SentenceTransformer(embed_model)
 
     print(f"Parsing + chunking ATT&CK techniques from {attack_file}...")
-    technique_chunks = load_technique_chunks(attack_file)
+    technique_chunks = load_technique_chunks(attack_file, embedder.tokenizer)
     print(f"  {len(technique_chunks)} technique chunks")
 
     print(f"Loading + chunking runbooks from {runbooks_dir}...")
-    runbook_chunks = load_runbook_chunks(runbooks_dir)
+    runbook_chunks = load_runbook_chunks(runbooks_dir, embedder.tokenizer)
     print(f"  {len(runbook_chunks)} runbook chunks")
 
     chunks = technique_chunks + runbook_chunks
 
     print(f"Persisting to Chroma at {db_dir} (collection '{collection_name}')...")
     client = chromadb.PersistentClient(path=str(db_dir))
-    collection = client.get_or_create_collection(
+    # Full rebuild: drop any existing collection first. Ingestion is a
+    # from-scratch build, not an incremental upsert, so this guarantees a
+    # re-ingest can't leave orphaned documents behind when chunk ids change
+    # (e.g. the technique split-per-field scheme produces different ids than an
+    # older one-chunk-per-technique run).
+    try:
+        client.delete_collection(name=collection_name)
+    except NotFoundError:
+        pass  # first run / nothing to drop
+    collection = client.create_collection(
         name=collection_name,
         metadata={"hnsw:space": "cosine"},  # bge-small-en-v1.5 is a cosine model
     )

@@ -26,10 +26,15 @@ corpus/runbooks/*.md ─┘                                   ▲
 ```
 
 **Corpus**
-- MITRE ATT&CK Enterprise (STIX/JSON), chunked **one chunk per technique**
-  (id + name + description + detection kept together).
-- Hand-written runbooks (`corpus/runbooks/*.md`), chunked with a generic
-  character splitter.
+- MITRE ATT&CK Enterprise (STIX/JSON), chunked **per technique field** —
+  description and detection are embedded as separate chunks (each split
+  further if it exceeds the embedder's 512-token window), all tagged with the
+  same `attack_id`.
+- Hand-written runbooks (`corpus/runbooks/*.md`), split with the same
+  token-budgeted splitter and tagged with the runbook filename.
+- Retrieval merges sibling chunks of the same document (by `attack_id` /
+  filename) back into one complete, citable unit, so a verdict cites a whole
+  technique or runbook rather than a fragment.
 
 **Stack:** Python 3.11+ · `sentence-transformers` (`bge-small-en-v1.5`, local) ·
 `chromadb` · `anthropic` (Claude) · `pydantic` v2. CLI-first.
@@ -68,6 +73,10 @@ For the latest release instead, drop the version suffix
 python ingest.py
 # options: --attack-file --runbooks-dir --db-dir --collection --embed-model --batch-size
 ```
+
+Each run rebuilds the collection from scratch (it drops any existing one
+first), so it is always safe to re-ingest after a corpus or chunking change
+without leaving stale documents behind.
 
 **Query** (triage an alert):
 

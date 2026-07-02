@@ -42,6 +42,7 @@ tests/
 pytest.ini
 requirements-dev.txt
 dump_stix.py
+test.py
 
 # --- Editors / OS ---
 .vscode/
