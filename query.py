@@ -1,4 +1,4 @@
-"""Query pipeline: alert text -> retrieve -> ground -> Claude -> validated JSON.
+"""Query pipeline: alert text -> rewrite -> retrieve -> ground -> Claude -> validated JSON.
 
 This file is partly author-owned. The plumbing (CLI, loading the embedder and
 the persisted Chroma collection, calling retrieval) is wired here. The GROUNDING
@@ -17,6 +17,7 @@ from sentence_transformers import SentenceTransformer
 
 from ingest import DEFAULT_COLLECTION, DEFAULT_DB_DIR, DEFAULT_EMBED_MODEL
 from retrieve import RetrievedChunk, retrieve
+from rewrite import DEFAULT_REWRITE_MODEL, ensure_embeddable, rewrite_alert
 
 # Generation model (see CLAUDE.md: Anthropic API, Claude). Opus 4.8 is the
 # current default; the author may tune this when wiring the call.
@@ -74,26 +75,41 @@ def triage(
     collection_name: str,
     embed_model: str,
     gen_model: str,
+    rewrite_model: str,
     top_k: int,
+    no_rewrite: bool = False,
 ) -> None:
     """Run the query pipeline for a single alert.
 
-    Wires retrieval together with generation. The generation + validation stage
-    is intentionally not implemented here because it depends on the author-owned
-    grounding prompt (`build_grounding_prompt`) and on `schema.py`.
+    Wires rewriting and retrieval together with generation. The generation +
+    validation stage is intentionally not implemented here because it depends
+    on the author-owned grounding prompt (`build_grounding_prompt`) and on
+    `schema.py`.
 
     Args:
-        alert_text: The analyst's natural-language alert description.
+        alert_text: The alert as the analyst provided it (prose or raw log).
         db_dir: Directory of the persisted Chroma database.
         collection_name: Collection to query.
         embed_model: Local sentence-transformers model id.
         gen_model: Claude model id for generation.
+        rewrite_model: Claude model id for the pre-retrieval query rewrite.
         top_k: Number of chunks to retrieve.
+        no_rewrite: Embed the raw alert text directly, skipping the rewrite
+            (escape hatch / A-B comparison; the token-window guard still runs).
     """
     embedder = SentenceTransformer(embed_model)
     collection = load_collection(db_dir, collection_name)
 
-    chunks = retrieve(alert_text, collection, embedder, k=top_k)
+    # The rewrite shapes ONLY the search text; the original alert stays the
+    # evidence for the grounding prompt below.
+    if no_rewrite:
+        search_text = alert_text
+    else:
+        search_text = rewrite_alert(alert_text, model=rewrite_model)
+        print(f"Search query (rewritten): {search_text}")
+    ensure_embeddable(search_text, embedder.tokenizer)
+
+    chunks = retrieve(search_text, collection, embedder, k=top_k)
 
     # --- AUTHOR-OWNED region (grounding prompt + Claude call) -----------------
     # Once build_grounding_prompt is implemented and schema.py is defined:
@@ -138,6 +154,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Claude model id for generation.",
     )
     parser.add_argument(
+        "--rewrite-model",
+        default=DEFAULT_REWRITE_MODEL,
+        help="Claude model id for the pre-retrieval query rewrite.",
+    )
+    parser.add_argument(
+        "--no-rewrite",
+        action="store_true",
+        help="Embed the raw alert text directly, skipping the rewrite step.",
+    )
+    parser.add_argument(
         "--top-k",
         type=int,
         default=DEFAULT_TOP_K,
@@ -155,7 +181,9 @@ def main(argv: list[str] | None = None) -> None:
         collection_name=args.collection,
         embed_model=args.embed_model,
         gen_model=args.gen_model,
+        rewrite_model=args.rewrite_model,
         top_k=args.top_k,
+        no_rewrite=args.no_rewrite,
     )
 
 

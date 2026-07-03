@@ -4,13 +4,13 @@
 # Local embeddings: bge-small-en-v1.5 via sentence-transformers (no API calls).
 # Pulls in torch + transformers transitively (left unpinned — large, platform
 # specific).
-sentence-transformers==3.3.1
+sentence-transformers==5.6.0
 
 # Vector store, persisted to ./chroma_db
-chromadb==0.5.23
+chromadb==1.5.9
 
-# Generation via the Anthropic API (Claude)
-anthropic==0.42.0
+# Generation via the Anthropic API (Claude) + the pre-retrieval query rewrite
+anthropic==0.116.0
 
 # Output validation — the schema.py contract
-pydantic==2.10.4
+pydantic==2.13.4
