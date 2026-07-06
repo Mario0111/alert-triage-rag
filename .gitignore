@@ -37,13 +37,6 @@ dist/
 # Model / HF caches if pointed locally
 .huggingface/
 
-# Local dev/test scaffolding — kept out of the repo while building.
-tests/
-pytest.ini
-requirements-dev.txt
-dump_stix.py
-test.py
-
 # --- Editors / OS ---
 .vscode/
 .idea/

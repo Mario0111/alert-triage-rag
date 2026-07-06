@@ -36,10 +36,10 @@ import chromadb
 from pydantic import ValidationError
 from sentence_transformers import SentenceTransformer
 
-from ingest import DEFAULT_COLLECTION, DEFAULT_DB_DIR, DEFAULT_EMBED_MODEL
-from retrieve import RetrievedChunk, retrieve
-from rewrite import DEFAULT_REWRITE_MODEL, ensure_embeddable, rewrite_alert
-from schema import SourceType, TriageVerdict
+from .ingest import DEFAULT_COLLECTION, DEFAULT_DB_DIR, DEFAULT_EMBED_MODEL
+from .retrieve import RetrievedChunk, retrieve
+from .rewrite import DEFAULT_REWRITE_MODEL, ensure_embeddable, rewrite_alert
+from .schema import SourceType, TriageVerdict
 
 # Generation model (see CLAUDE.md: Anthropic API, Claude). The verdict is the
 # reasoning-heavy stage, so it gets the capable model; the rewrite runs on

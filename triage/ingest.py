@@ -24,8 +24,8 @@ import chromadb
 from chromadb.errors import NotFoundError
 from sentence_transformers import SentenceTransformer
 
-import stix
-from chunk import Chunk, chunk_runbook, chunk_techniques
+from . import stix
+from .chunk import Chunk, chunk_runbook, chunk_techniques
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import anthropic
 
-from chunk import EMBED_MAX_TOKENS
+from .chunk import EMBED_MAX_TOKENS
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase

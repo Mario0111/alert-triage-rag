@@ -15,9 +15,12 @@ it, so clarity and explainability beat cleverness everywhere.
 
 Two phases:
 
-1. **Ingestion** (`ingest.py`): load corpus -> chunk -> embed -> persist
-   to Chroma. Run once / on corpus change.
-2. **Query** (`query.py`): embed alert text -> retrieve top-k chunks ->
+Core modules live in the `triage/` package; entry points are run from the
+repo root as `python -m triage.ingest` / `python -m triage.query`.
+
+1. **Ingestion** (`triage/ingest.py`): load corpus -> chunk -> embed ->
+   persist to Chroma. Run once / on corpus change.
+2. **Query** (`triage/query.py`): embed alert text -> retrieve top-k chunks ->
    build grounded prompt -> call Claude -> validate JSON against schema.
 
 Corpus:
@@ -30,7 +33,7 @@ Corpus:
 - Hand-written runbooks (markdown, in `corpus/runbooks/`) -> same
   token-budgeted splitting, every chunk tagged with the runbook filename
   (`source`) and its `chunk_index`.
-- Both types are reassembled at retrieval: `retrieve.py` merges sibling
+- Both types are reassembled at retrieval: `triage/retrieve.py` merges sibling
   chunks of the same document (key: `attack_id` for techniques, `source`
   for runbooks) back into one complete, citable unit. The "one citable
   document per result" guarantee lives in **retrieval**, not in the chunk
@@ -53,7 +56,7 @@ Corpus:
   Retrieval and prompting are hand-written. This is deliberate; the
   author must be able to explain every step.
 - Keep dependencies minimal. If a stdlib solution exists, use it.
-- The Pydantic schema in `schema.py` is the output contract. Generation
+- The Pydantic schema in `triage/schema.py` is the output contract. Generation
   code conforms to it; don't quietly change its fields.
 - Citations are non-negotiable: every verdict must reference the source
   chunks it used. A verdict with no traceable source is a bug.
@@ -64,11 +67,11 @@ Some files are author-owned and you should NOT write or auto-complete
 their core logic unless explicitly asked. When working near them, you may
 set up structure and TODOs, but leave the reasoning to the author:
 
-- `chunk.py` — the per-technique chunking strategy. Author writes this.
-- `retrieve.py` — the top-k retrieval logic. Author writes this.
-- the grounding prompt inside `query.py` — author writes this.
+- `triage/chunk.py` — the per-technique chunking strategy. Author writes this.
+- `triage/retrieve.py` — the top-k retrieval logic. Author writes this.
+- the grounding prompt inside `triage/query.py` — author writes this.
 
-You CAN freely own: project scaffold, `ingest.py` plumbing, Chroma
+You CAN freely own: project scaffold, `triage/ingest.py` plumbing, Chroma
 persistence boilerplate, STIX parsing glue, CLI argument handling,
 `requirements.txt`, `.gitignore`, README skeleton.
 

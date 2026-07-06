@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from stix import Technique
+from .stix import Technique
 
 import re
 from typing import TYPE_CHECKING
