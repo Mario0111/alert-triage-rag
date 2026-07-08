@@ -120,7 +120,7 @@ def rewrite_alert(
     return rewritten
 
 
-def ensure_embeddable(text: str, tokenizer: "PreTrainedTokenizerBase") -> None:
+def ensure_embeddable(text: str, tokenizer: PreTrainedTokenizerBase) -> None:
     """Fail loudly if ``text`` would be silently truncated by the embedder.
 
     ``SentenceTransformer.encode`` drops everything past the model's window

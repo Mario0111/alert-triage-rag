@@ -108,11 +108,23 @@ Verified: fresh venv (the pipx-equivalent; pipx not installed on the dev
 machine), `pip install <repo>` -> `triage ingest` -> `triage query "..."`
 run from outside the repo, no checkout assumptions.
 
-### Phase 8 — Tests + CI  [ ]
+### Phase 8 — Tests + CI  [x]
 Claude-owned, teaching mode. pytest suite (chunk splitting, retrieval
 merge, schema validation, mocked-Claude query path), ruff, mypy. GitHub
 Actions workflow running all three on push/PR. Done when: CI is green on
 a fresh clone and a deliberately broken test fails the build.
+Delivered: [dev] extra (pytest/ruff/mypy, pinned) + [tool.*] configs in
+pyproject.toml; 42 hermetic tests in tests/ (no network, no API calls, no
+model download — fake tokenizer/embedder/Anthropic client, in-memory
+Chroma via EphemeralClient with telemetry off); .github/workflows/ci.yml
+(3.11 + 3.14 matrix, pip cache, CPU-only torch). Verified locally: ruff,
+mypy, pytest all green from a TRIAGE_DATA_DIR-less shell; a deliberately
+broken assertion failed the suite (exit 1) and was restored. No GitHub
+remote yet, so the workflow is correct-on-push (YAML parse-validated);
+its first real run happens when the repo is pushed.
+Author follow-ups proposed by lint/type findings (NOT applied — see
+decisions log): zip(strict=True) in retrieve.py, StrEnum in schema.py,
+type-narrowing in retrieve.py/chunk.py.
 
 ### Phase 9 — FastAPI service  [ ]
 Claude-owned plumbing; schema.py stays the contract. `POST /triage`
@@ -206,6 +218,40 @@ produces a grounded verdict end-to-end without a human typing anything.
     per-user dir. Subpaths under the data root deliberately mirror the
     old repo layout (chroma_db/, corpus/attack/) so pointing
     TRIAGE_DATA_DIR at a checkout IS dev mode — no second code path.
+- Phase 8 test/CI decisions:
+  - Tests are hermetic by construction: the tokenizer, embedder, and
+    Anthropic client are faked; Chroma runs in-memory (EphemeralClient,
+    telemetry disabled). Retrieval tests use hand-picked unit vectors in
+    a 3-dim cosine space so ranking outcomes are forced, not computed.
+    Gotcha found: EphemeralClient is cached per process, so collection
+    names must be unique per test.
+  - Division of labor held: tests exercise author-owned behavior; no
+    bugs found in author-owned code. Lint/type findings whose fixes
+    change behavior in author-owned/paired files were NOT applied but
+    parked as scoped, commented config ignores + proposals to the author:
+    (1) retrieve.py: zip(..., strict=True) on the two Chroma parallel-list
+    zips (fail-loudly on length mismatch) — ruff B905;
+    (2) schema.py: (str, Enum) -> StrEnum (changes str(member); safe here
+    since only .value is used) — ruff UP042;
+    (3) retrieve.py/chunk.py: real type-narrowing for chromadb's
+    Optional/TypedDict results and transformers' decode() overloads,
+    replacing the per-module mypy disable_error_code entries.
+    Each ignore is commented in pyproject.toml and should be removed when
+    the author applies or rejects the fix.
+  - CI matrix is 3.11 (requires-python floor) + 3.14 (dev machine) only;
+    intermediate versions add a full torch install each for little signal.
+    CI installs CPU-only torch (~200 MB) from the pytorch cpu index before
+    the package — the default Linux wheel is the CUDA build (~2 GB). Pip's
+    download cache is keyed on pyproject.toml's hash.
+  - Staleness detection (parking lot): decided to implement at the START
+    of Phase 9, not in Phase 8 — it must land before the API serves
+    verdicts from silently-stale stores, and Phase 8's EphemeralClient
+    harness makes it cheap to test. Mechanism: ingest writes a fingerprint
+    (app version + corpus hash + chunking params) into the collection
+    metadata (already used for hnsw:space); query.load_collection checks
+    it and fails with "re-run triage ingest". Paired work: the plumbing is
+    Claude-owned, but WHICH fields define staleness (chunking params) is
+    the author's call.
 - SIEM: Wazuh. Free, single-VM friendly, ships rule->ATT&CK technique
   mappings (dovetails with the corpus), and its integratord hook makes
   "call a script with the alert JSON" a first-class feature.
@@ -240,7 +286,9 @@ produces a grounded verdict end-to-end without a human typing anything.
   unless the id scheme happens to drift (which retrieve.py catches loudly).
   Candidate fix: write a fingerprint (app version + corpus hash + chunking
   params) into the collection metadata at ingest, check it at query time
-  and fail with "re-run triage ingest". Decide/implement around Phase 8-9.
+  and fail with "re-run triage ingest". DECIDED (Phase 8): implement at
+  the start of Phase 9 — see the decisions-log entry for the mechanism
+  and the author-owned part (which fields define staleness).
 - Uninstall leaves the data dir behind (~700 MB with the bundle + store):
   normal CLI-app behavior, but README could gain an "uninstall fully"
   note (`pipx uninstall` + delete %LOCALAPPDATA%\alert-triage-rag).

@@ -52,6 +52,25 @@ dependencies = [
     "platformdirs==4.10.0",
 ]
 
+# Optional dependency groups ("extras"). NOT installed by default: a user who
+# `pipx install`s the app never downloads test/lint tooling. Contributors opt
+# in with `pip install -e ".[dev]"` — the [dev] suffix names the group below.
+# Keeping the group here (not a separate requirements-dev.txt) means one file
+# defines every environment this project has, with the same pinning
+# convention: pins are tested starting points, bump deliberately.
+[project.optional-dependencies]
+dev = [
+    # Test runner: discovers tests/, runs them, reports failures with
+    # introspected assert output (no assertEqual boilerplate needed).
+    "pytest==9.1.1",
+    # Linter (+ import sorter). One fast tool covering the pycodestyle/
+    # pyflakes/isort/bugbear rule families — configured in [tool.ruff] below.
+    "ruff==0.15.20",
+    # Static type checker: verifies the type hints (which CLAUDE.md mandates
+    # everywhere) actually hold together across module boundaries.
+    "mypy==2.2.0",
+]
+
 # Entry points: the reason `triage` exists as a real command after install.
 # At install time pip generates a tiny executable shim (triage.exe on Windows)
 # on the environment's PATH that imports triage.cli and calls main(). Without
@@ -71,3 +90,85 @@ include = ["triage*"]
 # wheel and are read back via importlib.resources — which works whether the
 # package is installed normally, installed editable, or run from the repo.
 triage = ["corpus/runbooks/*.md"]
+
+# --- Dev tool configuration -------------------------------------------------
+# pyproject.toml doubles as the config file for the dev tools (each reads its
+# own [tool.<name>] table) — one file instead of .ruff.toml + mypy.ini +
+# pytest.ini, and the config travels with the package definition.
+
+[tool.ruff]
+# Ruff infers its Python-version target from `requires-python` above and
+# already excludes .venv/, build/, dist/ by default, so only the rule
+# selection needs saying.
+
+[tool.ruff.lint]
+# Rule families, by their historical tool of origin:
+#   E/W = pycodestyle (style errors/warnings: indentation, whitespace, ...)
+#   F   = pyflakes (real defects: undefined names, unused imports/variables)
+#   I   = isort (import blocks sorted + grouped stdlib/third-party/local)
+#   B   = flake8-bugbear (likely bugs: mutable default args, useless raise, ...)
+#   UP  = pyupgrade (idioms the requires-python floor makes available)
+# Ruff's default is only E4/E7/E9 + F; opting into the rest is deliberate —
+# each family either catches real bugs (F, B) or removes a whole class of
+# review nitpicks (E/W, I, UP) so humans never argue about them.
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Findings in author-owned/paired files whose fixes CHANGE BEHAVIOR are
+# ignored here instead of applied — per the division-of-labor rule they are
+# proposed to the author (see PLAN.md decisions log), not decided by lint:
+#   B905  (retrieve.py): zip(..., strict=True) would make retrieval raise on
+#         mismatched parallel lists from Chroma — fits fail-loudly, but it's
+#         the author's retrieval loop.
+#   UP042 (schema.py): (str, Enum) -> StrEnum changes str(member) output;
+#         schema.py is the paired output contract.
+# Remove the entry once the author applies or rejects the change.
+"triage/retrieve.py" = ["B905"]
+"triage/schema.py" = ["UP042"]
+
+[tool.mypy]
+# What to check. Explicit so mypy never wanders into .venv/ or build/ (the
+# build/ copy of the package would otherwise collide with triage/ as a
+# duplicate module named "triage").
+files = ["triage", "tests"]
+# Check against the OLDEST supported Python (the requires-python floor), not
+# whatever interpreter runs mypy — code that type-checks on 3.11 semantics
+# works on everything newer, but not vice versa.
+python_version = "3.11"
+# CLAUDE.md mandates type hints everywhere; this makes mypy enforce that
+# instead of silently skipping unannotated functions (its default).
+disallow_untyped_defs = true
+# A `# type: ignore` that no longer suppresses anything is stale noise —
+# usually left behind by a dependency upgrade. Flag it so it gets removed.
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# Untyped third-party libraries: they ship no type information, so mypy would
+# otherwise error on every `import sentence_transformers`. This narrows the
+# concession to exactly these modules — their objects are typed as Any —
+# instead of the blunt global ignore_missing_imports, which would also
+# silence typos in OUR import statements.
+module = ["sentence_transformers.*", "transformers.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Author-owned modules with type-stub friction, NOT bugs: chromadb types
+# query/get results as Optional (presence depends on the include= argument,
+# which the code always passes) and as TypedDict/Mapping where the code says
+# dict; transformers types tokenizer.decode() as str | list[str]. The precise
+# fixes (narrowing asserts or targeted `# type: ignore[code]` comments) edit
+# author-owned code, so they are proposed in PLAN.md instead of applied.
+# Trade-off, deliberately accepted until then: these error CODES are blind in
+# these two MODULES only — everything else stays fully checked. Remove each
+# entry when the author lands the real fix.
+module = ["triage.retrieve"]
+disable_error_code = ["arg-type", "return-value", "dict-item"]
+
+[[tool.mypy.overrides]]
+module = ["triage.chunk"]
+disable_error_code = ["union-attr"]
+
+[tool.pytest.ini_options]
+# Where tests live. Without this, pytest walks the whole repo looking for
+# test_*.py files — slower, and it can pick up strays (e.g. inside .venv).
+testpaths = ["tests"]

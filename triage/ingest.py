@@ -83,7 +83,7 @@ def fetch_attack_bundle(dest: Path, url: str = ATTACK_BUNDLE_URL) -> None:
 
 
 def load_technique_chunks(
-    attack_file: Path, tokenizer: "PreTrainedTokenizerBase"
+    attack_file: Path, tokenizer: PreTrainedTokenizerBase
 ) -> list[Chunk]:
     """Parse the ATT&CK STIX bundle and chunk it per technique field.
 
@@ -100,7 +100,7 @@ def load_technique_chunks(
 
 
 def load_runbook_chunks(
-    runbooks_dir: Path, tokenizer: "PreTrainedTokenizerBase"
+    runbooks_dir: Path, tokenizer: PreTrainedTokenizerBase
 ) -> list[Chunk]:
     """Load every markdown runbook and chunk each one.
 

@@ -9,12 +9,11 @@ reasoning, don't change the shape without updating `ingest.py`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .stix import Technique
-
-import re
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -83,13 +82,13 @@ def _assemble(header: str, part: str, idx: int, total: int, piece: str) -> str:
     return f"{header}\n\n{part.capitalize()} ({idx + 1}/{total}):\n{piece}"
 
 
-def _n_tokens(text: str, tokenizer: "PreTrainedTokenizerBase") -> int:
+def _n_tokens(text: str, tokenizer: PreTrainedTokenizerBase) -> int:
     """Count content tokens, excluding the [CLS]/[SEP] the model adds itself."""
     return len(tokenizer(text, add_special_tokens=False)["input_ids"])
 
 
 def _hard_split(
-    text: str, tokenizer: "PreTrainedTokenizerBase", budget: int
+    text: str, tokenizer: PreTrainedTokenizerBase, budget: int
 ) -> list[str]:
     """Last-resort split of a single over-budget sentence on token boundaries.
 
@@ -107,7 +106,7 @@ def _hard_split(
 
 
 def _split_by_tokens(
-    text: str, tokenizer: "PreTrainedTokenizerBase", budget: int
+    text: str, tokenizer: PreTrainedTokenizerBase, budget: int
 ) -> list[str]:
     """Greedily pack sentences into pieces of at most ``budget`` content tokens."""
     pieces: list[str] = []
@@ -142,7 +141,7 @@ def _split_field(
     field_text: str,
     part: str,
     header: str,
-    tokenizer: "PreTrainedTokenizerBase | None",
+    tokenizer: PreTrainedTokenizerBase | None,
 ) -> list[str]:
     """Split one technique field into pieces whose assembled chunk fits the window.
 
@@ -164,7 +163,7 @@ def _split_field(
 
 def chunk_techniques(
     techniques: list[Technique],
-    tokenizer: "PreTrainedTokenizerBase | None" = None,
+    tokenizer: PreTrainedTokenizerBase | None = None,
 ) -> list[Chunk]:
     """Chunk ATT&CK techniques into sub-limit, attack_id-tagged chunks.
 
@@ -285,7 +284,7 @@ def _runbook_header(text: str, source: str) -> str:
 def chunk_runbook(
     text: str,
     source: str,
-    tokenizer: "PreTrainedTokenizerBase | None" = None,
+    tokenizer: PreTrainedTokenizerBase | None = None,
 ) -> list[Chunk]:
     """Chunk a single runbook into sub-window, source-tagged chunks.
 

@@ -1,0 +1,78 @@
+# CI: ruff + mypy + pytest on every push to main and every pull request.
+#
+# GitHub Actions vocabulary, top to bottom:
+#   workflow  = this file; runs when an event in `on:` fires
+#   job       = a unit of work on a fresh virtual machine (`runs-on`)
+#   step      = one command or reusable action inside a job, run in order
+#   matrix    = stamps out one copy of the job per listed value
+#
+# The repo has no remote yet — this file is correct-on-push: the first push
+# to GitHub activates it with no further setup (no secrets needed: the test
+# suite is hermetic, so CI never calls the Anthropic API or downloads bge).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # pull_request runs on the PR's merged preview; together with the push
+  # trigger scoped to main, a PR is checked once as a PR and once when it
+  # lands — without the branch filter every push to a PR branch would run
+  # the whole matrix twice (once as push, once as pull_request).
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      # One matrix job failing should not cancel the other: seeing BOTH
+      # results tells you whether a failure is version-specific.
+      fail-fast: false
+      matrix:
+        # The requires-python floor (3.11) proves the declared minimum is
+        # honest; 3.14 matches the dev machine. The versions in between are
+        # skipped deliberately — code that runs on both ends of the range
+        # almost certainly runs on the middle, and each extra version costs
+        # a full torch install + test run.
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      # Clone the repo into the fresh VM. Without this the runner is empty.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          # Persist pip's download cache between runs, keyed on a hash of
+          # pyproject.toml (so the cache invalidates exactly when the
+          # dependency list changes). The big win is torch: ~200 MB that
+          # would otherwise be re-downloaded on every single run.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # CI-only cost control, NOT a project dependency decision: on Linux,
+      # a plain `pip install torch` resolves to the CUDA build (~2 GB of
+      # GPU libraries a CPU-only runner can never use). Installing the CPU
+      # wheel first means the next step sees torch already satisfied and
+      # skips it. Local installs are unaffected — this exists only here.
+      - name: Install CPU-only torch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      # -e (editable) matches the contributor setup; [dev] pulls in
+      # pytest/ruff/mypy at the exact pinned versions from pyproject.toml,
+      # so CI checks with the same tools a contributor runs locally.
+      - name: Install package + dev tools
+        run: pip install -e ".[dev]"
+
+      # The three gates, cheapest first: a lint failure aborts the job
+      # before the slower type check and test run spend minutes on code
+      # that's already known-red. Each command's non-zero exit code is what
+      # fails the step (and with it the job and the commit's green check).
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: mypy
+
+      - name: Tests (pytest)
+        run: pytest

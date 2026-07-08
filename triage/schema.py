@@ -114,7 +114,7 @@ class TriageVerdict(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _techniques_must_be_cited(self) -> "TriageVerdict":
+    def _techniques_must_be_cited(self) -> TriageVerdict:
         """Reject any referenced technique that lacks a backing ATT&CK citation."""
         cited_attack_ids = {
             c.ref for c in self.citations if c.source_type is SourceType.ATTACK

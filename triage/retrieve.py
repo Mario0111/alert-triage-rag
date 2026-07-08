@@ -179,7 +179,7 @@ def _group_hits(raw: dict) -> list[_DocGroup]:
 
 
 def _get_by_ids(
-    collection: "chromadb.Collection", ids: list[str], *, required: bool
+    collection: chromadb.Collection, ids: list[str], *, required: bool
 ) -> dict[str, tuple[str, Metadata]]:
     """Fetch chunks by id, optionally failing loudly on any miss.
 
@@ -231,7 +231,7 @@ def _split_stored_text(text: str) -> tuple[str, str]:
 
 
 def _complete_technique(
-    group: _DocGroup, collection: "chromadb.Collection"
+    group: _DocGroup, collection: chromadb.Collection
 ) -> list[str]:
     """Recover ALL of a technique's chunks and return them in citation order.
 
@@ -299,7 +299,7 @@ def _complete_technique(
 
 
 def _complete_runbook(
-    group: _DocGroup, collection: "chromadb.Collection"
+    group: _DocGroup, collection: chromadb.Collection
 ) -> list[str]:
     """Recover ALL of a runbook's chunks and return them in ``chunk_index`` order.
 
@@ -334,7 +334,7 @@ def _complete_runbook(
 
 def _assemble_document(
     group: _DocGroup,
-    collection: "chromadb.Collection",
+    collection: chromadb.Collection,
     backfilled: bool = False,
 ) -> RetrievedChunk:
     """Turn a group of raw hits into one complete, citable result.
@@ -377,7 +377,7 @@ def _assemble_document(
 
 
 def _nearest_runbook(
-    query_vec: list[float], collection: "chromadb.Collection"
+    query_vec: list[float], collection: chromadb.Collection
 ) -> RetrievedChunk | None:
     """Fetch the single nearest runbook document for the backfill guarantee.
 
@@ -413,8 +413,8 @@ def _nearest_runbook(
 
 def retrieve(
     alert_text: str,
-    collection: "chromadb.Collection",
-    embedder: "SentenceTransformer",
+    collection: chromadb.Collection,
+    embedder: SentenceTransformer,
     k: int = 5,
 ) -> list[RetrievedChunk]:
     """Retrieve the top-k most relevant citable documents for an alert.

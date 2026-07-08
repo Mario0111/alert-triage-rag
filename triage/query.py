@@ -1,4 +1,4 @@
-"""Query pipeline: alert text -> rewrite -> retrieve -> ground -> Claude -> validated JSON.
+"""Query pipeline: alert -> rewrite -> retrieve -> ground -> Claude -> valid JSON.
 
 The generation stage enforces grounding in three layers (decisions settled with
 the author; each is interview material):
