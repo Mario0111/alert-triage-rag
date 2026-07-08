@@ -74,6 +74,14 @@ Grounding rules (non-negotiable):
 - When a `quote` would help an analyst verify a claim, copy it VERBATIM from
   the source text.
 
+Runbook guarantee:
+- At least one runbook is always provided. A source marked
+  backfilled="true" did NOT match the alert by similarity — it is merely the
+  nearest available runbook, included so a triage procedure is always on
+  hand. Judge for yourself whether it applies to this alert: if it does not,
+  do not cite it and do not follow its disposition; if it does, treat it
+  like any other source.
+
 Verdict semantics:
 - `verdict`: your triage disposition for this alert.
 - `severity`: how bad the activity would be IF it is malicious — not how
@@ -108,6 +116,11 @@ def build_grounding_prompt(alert_text: str, chunks: list[RetrievedChunk]) -> str
     own ``<alert>`` tag: the rewrite is retrieval-only, so the verdict is
     grounded on the un-paraphrased evidence.
 
+    A runbook appended by the retrieval guarantee carries
+    ``backfilled="true"`` on its block: presence in the prompt must not imply
+    similarity-matched relevance, so the model is told which source to vet
+    (see the system prompt's runbook-guarantee rule).
+
     Args:
         alert_text: The alert as the analyst provided it.
         chunks: The retrieved, citable source documents.
@@ -130,9 +143,10 @@ def build_grounding_prompt(alert_text: str, chunks: list[RetrievedChunk]) -> str
     for chunk in chunks:
         kind = _source_kind(chunk)
         name = chunk.metadata.get("name", chunk.id)
+        backfilled = ' backfilled="true"' if chunk.backfilled else ""
         blocks.append(
-            f'<source id="{chunk.id}" type="{kind.value}" name="{name}">\n'
-            f"{chunk.text}\n</source>"
+            f'<source id="{chunk.id}" type="{kind.value}" name="{name}"'
+            f"{backfilled}>\n{chunk.text}\n</source>"
         )
     sources = "\n\n".join(blocks)
     return f"<sources>\n{sources}\n</sources>\n\n<alert>\n{alert_text}\n</alert>"
@@ -342,7 +356,10 @@ def triage(
     chunks = retrieve(search_text, collection, embedder, k=top_k)
     print(
         f"Retrieved {len(chunks)} sources: "
-        + ", ".join(chunk.id for chunk in chunks)
+        + ", ".join(
+            chunk.id + (" (backfilled)" if chunk.backfilled else "")
+            for chunk in chunks
+        )
     )
 
     verdict = generate_verdict(alert_text, chunks, model=gen_model)

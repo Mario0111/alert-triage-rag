@@ -39,6 +39,17 @@ enforced. The design decisions, in pipeline order:
    because chunks embed independently), then the labeled bodies in explicit
    order — description before detection, mirroring how ATT&CK presents a
    technique and front-loading identification before detection reasoning.
+
+6. **Guarantee a runbook candidate (backfill, not quota).** Runbooks encode
+   the triage procedure, but a handful of them compete against hundreds of
+   techniques in one similarity pool, so a stylistic mismatch between alert
+   prose and runbook prose can crowd them out entirely. When the mixed top-k
+   contains no runbook, the single nearest runbook is APPENDED and marked
+   ``backfilled`` — never reserved a slot: alerts that match several runbooks
+   keep all of them, and only the failure case changes shape. Whether the
+   appended runbook actually applies is judged by the generation stage, which
+   reads both texts; a cosine threshold can't make that call (observed
+   runbook margins sit within embedding noise).
 """
 
 from __future__ import annotations
@@ -93,12 +104,17 @@ class RetrievedChunk:
             ``1 - cosine_similarity``, so LOWER is better. Passed through
             unconverted — one source of truth, no translation layer to get a
             sign wrong in.
+        backfilled: True when this runbook did not place in the similarity
+            top-k and was appended by the runbook guarantee (design note 6).
+            The grounding prompt discloses this so the model judges the
+            runbook's relevance instead of inferring it from mere presence.
     """
 
     id: str
     text: str
     metadata: Metadata
     score: float
+    backfilled: bool = False
 
 
 @dataclass
@@ -317,7 +333,9 @@ def _complete_runbook(
 
 
 def _assemble_document(
-    group: _DocGroup, collection: "chromadb.Collection"
+    group: _DocGroup,
+    collection: "chromadb.Collection",
+    backfilled: bool = False,
 ) -> RetrievedChunk:
     """Turn a group of raw hits into one complete, citable result.
 
@@ -329,6 +347,8 @@ def _assemble_document(
     Args:
         group: The document's retrieved pieces, with its best distance.
         collection: The Chroma collection, for direct id lookups.
+        backfilled: Whether this document was appended by the runbook
+            guarantee rather than placing in the similarity top-k.
 
     Returns:
         The reassembled document as a `RetrievedChunk`.
@@ -352,7 +372,43 @@ def _assemble_document(
         text=header + "\n\n" + "\n\n".join(bodies),
         metadata=doc_meta,
         score=group.best_distance,
+        backfilled=backfilled,
     )
+
+
+def _nearest_runbook(
+    query_vec: list[float], collection: "chromadb.Collection"
+) -> RetrievedChunk | None:
+    """Fetch the single nearest runbook document for the backfill guarantee.
+
+    A single ``n_results=1`` hit under a runbook-only filter is enough:
+    Chroma returns ascending distance and a document scores as its best
+    chunk, so the top raw hit already identifies the best runbook —
+    `_assemble_document` then completes it from siblings. No over-fetch loop.
+
+    The filter reuses the ingest<->retrieve metadata contract: technique
+    chunks carry ``source: "ATT&CK"``, so anything else is a runbook.
+
+    Args:
+        query_vec: The already-computed query embedding — reused, the alert
+            is never embedded twice.
+        collection: The Chroma collection.
+
+    Returns:
+        The nearest runbook, marked ``backfilled=True``; None when the
+        collection contains no runbooks at all, in which case the guarantee
+        cannot hold and the caller returns techniques only.
+    """
+    raw = collection.query(
+        query_embeddings=[query_vec],
+        n_results=1,
+        where={"source": {"$ne": "ATT&CK"}},
+        include=["documents", "metadatas", "distances"],
+    )
+    groups = _group_hits(raw)
+    if not groups:
+        return None
+    return _assemble_document(groups[0], collection, backfilled=True)
 
 
 def retrieve(
@@ -380,7 +436,9 @@ def retrieve(
     Returns:
         Up to ``k`` `RetrievedChunk`, best match first, one per document.
         Fewer than ``k`` only when the whole corpus merges into fewer
-        documents.
+        documents. When the top-k contains no runbook, the nearest runbook
+        is appended as one extra result marked ``backfilled`` (design
+        note 6), so callers may receive ``k + 1`` documents.
 
     Raises:
         ValueError: If ``k`` is not positive or the collection is empty.
@@ -414,4 +472,15 @@ def retrieve(
             break
         n_results = min(n_results * 2, total_chunks)
 
-    return [_assemble_document(group, collection) for group in groups[:k]]
+    top = groups[:k]
+    results = [_assemble_document(group, collection) for group in top]
+
+    # The runbook guarantee (design note 6): backfill only on the failure
+    # case, so naturally-matching runbooks — including several at once —
+    # keep their earned ranks and existing behavior is untouched.
+    if all(group.kind != "runbook" for group in top):
+        runbook = _nearest_runbook(query_vec, collection)
+        if runbook is not None:
+            results.append(runbook)
+
+    return results

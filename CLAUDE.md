@@ -39,6 +39,11 @@ Corpus:
   document per result" guarantee lives in **retrieval**, not in the chunk
   shape — which is also why chunks carry no overlap: merge, not overlap,
   is the context mechanism.
+- Retrieval also guarantees a runbook candidate: when the similarity
+  top-k contains no runbook, the single nearest runbook is appended,
+  marked `backfilled`, and the grounding prompt tells the model to judge
+  its relevance rather than assume it (backfill, not a quota slot —
+  naturally-matching runbooks keep their earned ranks).
 
 ## Stack (fixed — do not substitute)
 

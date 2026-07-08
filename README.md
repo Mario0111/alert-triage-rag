@@ -35,6 +35,9 @@ corpus/runbooks/*.md ─┘                               ▲
 - Retrieval merges sibling chunks of the same document (by `attack_id` /
   filename) back into one complete, citable unit, so a verdict cites a whole
   technique or runbook rather than a fragment.
+- A runbook is always among the sources: if none places in the similarity
+  top-k, the nearest one is appended — flagged as `backfilled` so the model
+  judges its relevance instead of assuming it.
 
 **Stack:** Python 3.11+ · `sentence-transformers` (`bge-small-en-v1.5`, local) ·
 `chromadb` · `anthropic` (Claude) · `pydantic` v2. CLI-first.
