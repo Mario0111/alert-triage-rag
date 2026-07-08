@@ -36,7 +36,8 @@ import chromadb
 from pydantic import ValidationError
 from sentence_transformers import SentenceTransformer
 
-from .ingest import DEFAULT_COLLECTION, DEFAULT_DB_DIR, DEFAULT_EMBED_MODEL
+from . import paths
+from .ingest import DEFAULT_COLLECTION, DEFAULT_EMBED_MODEL
 from .retrieve import RetrievedChunk, retrieve
 from .rewrite import DEFAULT_REWRITE_MODEL, ensure_embeddable, rewrite_alert
 from .schema import SourceType, TriageVerdict
@@ -306,7 +307,7 @@ def load_collection(
     """
     if not db_dir.is_dir():
         raise FileNotFoundError(
-            f"Chroma database not found at {db_dir}. Run ingest.py first."
+            f"Chroma database not found at {db_dir}. Run `triage ingest` first."
         )
     client = chromadb.PersistentClient(path=str(db_dir))
     return client.get_collection(name=collection_name)
@@ -367,16 +368,22 @@ def triage(
     return verdict
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments for the query script."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Attach the query arguments to ``parser``.
+
+    Shared between the standalone module entry point and the ``triage query``
+    subcommand (see cli.py), so both expose exactly the same flags. Defaults
+    are resolved here, at parser-build time, so ``TRIAGE_DATA_DIR`` set in the
+    invoking shell is honored.
+    """
     parser.add_argument(
         "alert",
         help="The alert description in natural language (quote it).",
     )
     parser.add_argument(
         "--db-dir",
-        default=DEFAULT_DB_DIR,
+        type=Path,
+        default=paths.chroma_dir(),
         help="Directory of the persisted Chroma database.",
     )
     parser.add_argument(
@@ -410,15 +417,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_TOP_K,
         help="Number of documents to retrieve.",
     )
-    return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
-    """CLI entry point."""
-    args = parse_args(argv)
+def run(args: argparse.Namespace) -> None:
+    """Execute the query pipeline from parsed arguments (subcommand handler)."""
     triage(
         alert_text=args.alert,
-        db_dir=Path(args.db_dir),
+        db_dir=args.db_dir,
         collection_name=args.collection,
         embed_model=args.embed_model,
         gen_model=args.gen_model,
@@ -426,6 +431,13 @@ def main(argv: list[str] | None = None) -> None:
         top_k=args.top_k,
         no_rewrite=args.no_rewrite,
     )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Standalone entry point (`python -m triage.query`)."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_arguments(parser)
+    run(parser.parse_args(argv))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,73 @@
+# pyproject.toml — the single, standardized (PEP 517/518/621) description of
+# how to BUILD and INSTALL this project. `pip install .` reads this file,
+# builds a wheel, and installs it — no setup.py, no requirements.txt.
+#
+# Three tables matter here:
+#   [build-system]      -> WHO builds the package (the build backend)
+#   [project]           -> WHAT the package is (metadata, deps, entry points)
+#   [tool.setuptools.*] -> backend-specific details (which files go in the wheel)
+
+[build-system]
+# The build backend is the tool pip delegates to when it needs to turn this
+# source tree into a wheel (the installable .whl archive). pip itself never
+# builds anything — it reads this table, installs `requires` into an isolated
+# temporary environment, and calls the named backend there. setuptools is the
+# long-standing default backend; we have no exotic build needs, so it's the
+# minimal-dependency choice (see CLAUDE.md). Without this table pip falls back
+# to a legacy setuptools path that assumes a setup.py — deprecated and
+# eventually an error.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alert-triage-rag"
+version = "0.1.0"
+description = "Retrieval-augmented triage assistant for SOC/MDR alerts: MITRE ATT&CK + runbook grounded verdicts with citations."
+readme = "README.md"
+# The oldest Python this code supports. pip refuses to install onto anything
+# older, so users get a clear error instead of a confusing SyntaxError at
+# runtime. The 3.11 floor matches CLAUDE.md's fixed stack.
+requires-python = ">=3.11"
+authors = [{ name = "Mario" }]
+keywords = ["rag", "soc", "triage", "mitre-attack", "security"]
+
+# Runtime dependencies, migrated from requirements.txt (now retired — this
+# list is the single source of truth). Pins are tested starting points; bump
+# deliberately. pip installs these automatically alongside the package, which
+# is what makes `pipx install .` work on a machine that has none of them.
+dependencies = [
+    # Local embeddings: bge-small-en-v1.5 via sentence-transformers (no API
+    # calls). Pulls in torch + transformers transitively (left unpinned —
+    # large, platform specific).
+    "sentence-transformers==5.6.0",
+    # Vector store, persisted under the per-user data dir (see triage/paths.py)
+    "chromadb==1.5.9",
+    # Generation via the Anthropic API (Claude) + the pre-retrieval query rewrite
+    "anthropic==0.116.0",
+    # Output validation — the schema.py contract
+    "pydantic==2.13.4",
+    # Per-user data directory resolution (%LOCALAPPDATA% on Windows,
+    # ~/.local/share on Linux, ~/Library/Application Support on macOS) so an
+    # installed CLI never assumes a repo checkout.
+    "platformdirs==4.10.0",
+]
+
+# Entry points: the reason `triage` exists as a real command after install.
+# At install time pip generates a tiny executable shim (triage.exe on Windows)
+# on the environment's PATH that imports triage.cli and calls main(). Without
+# this table the only way to run the app is `python -m ...` from a checkout.
+[project.scripts]
+triage = "triage.cli:main"
+
+[tool.setuptools.packages.find]
+# Only the `triage` package ships in the wheel. Explicit include so top-level
+# repo directories (corpus/, build/, chroma_db/) can never leak into an
+# install by accident.
+include = ["triage*"]
+
+[tool.setuptools.package-data]
+# Non-code files to bundle INSIDE the installed package. The runbooks are part
+# of the product (the corpus the app retrieves from), so they ship in the
+# wheel and are read back via importlib.resources — which works whether the
+# package is installed normally, installed editable, or run from the repo.
+triage = ["corpus/runbooks/*.md"]

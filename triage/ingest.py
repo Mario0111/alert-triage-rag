@@ -2,21 +2,27 @@
 
 Run once, or whenever the corpus changes. This module is the plumbing that wires
 the pieces together; the actual chunking lives in `chunk.py` (author-owned).
-Once those stubs are implemented, this script runs end to end:
 
-    corpus/attack/*.json  --stix.parse_techniques-->  Technique
-                          --chunk.chunk_techniques-->  Chunk
-    corpus/runbooks/*.md  --chunk.chunk_runbook----->  Chunk
-                          --bge-small-en-v1.5-------->  embeddings
-                          --chromadb----------------->  ./chroma_db
+    ATT&CK bundle (auto-downloaded)  --stix.parse_techniques-->  Technique
+                                     --chunk.chunk_techniques-->  Chunk
+    packaged runbooks (*.md)         --chunk.chunk_runbook----->  Chunk
+                                     --bge-small-en-v1.5-------->  embeddings
+                                     --chromadb----------------->  data dir
 
-Embeddings are computed locally (no API calls) and the collection uses cosine
-distance, which is what bge-small-en-v1.5 is trained for.
+All default locations resolve through `paths.py` (per-user data directory,
+``TRIAGE_DATA_DIR`` override for dev mode). The ATT&CK bundle is fetched into
+the data dir on first run — an installed app can't assume a repo checkout with
+a pre-downloaded corpus. Embeddings are computed locally (no API calls) and
+the collection uses cosine distance, which is what bge-small-en-v1.5 is
+trained for.
 """
 
 from __future__ import annotations
 
 import argparse
+import shutil
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,7 +30,7 @@ import chromadb
 from chromadb.errors import NotFoundError
 from sentence_transformers import SentenceTransformer
 
-from . import stix
+from . import paths, stix
 from .chunk import Chunk, chunk_runbook, chunk_techniques
 
 if TYPE_CHECKING:
@@ -32,10 +38,48 @@ if TYPE_CHECKING:
 
 # Fixed stack (see CLAUDE.md). bge-small-en-v1.5, run locally.
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-DEFAULT_DB_DIR = "./chroma_db"
 DEFAULT_COLLECTION = "alert_triage"
-DEFAULT_ATTACK_FILE = "corpus/attack/enterprise-attack.json"
-DEFAULT_RUNBOOKS_DIR = "corpus/runbooks"
+
+# Pinned to Enterprise ATT&CK v19.1 — the release this project's chunking and
+# runbooks were written against. A moving "latest" URL could silently change
+# the corpus under the pipeline; refreshes should be a deliberate act
+# (--refresh-attack after bumping this pin).
+ATTACK_BUNDLE_URL = (
+    "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/"
+    "master/enterprise-attack/enterprise-attack-19.1.json"
+)
+
+
+def fetch_attack_bundle(dest: Path, url: str = ATTACK_BUNDLE_URL) -> None:
+    """Download the ATT&CK Enterprise STIX bundle (~51 MB) to ``dest``.
+
+    Streams to a ``.part`` file and renames only on success, so an interrupted
+    download can never leave a truncated file that a later run mistakes for a
+    valid corpus (stix.parse_techniques would fail loudly on it, but failing
+    at download time with the real cause is clearer).
+
+    Args:
+        dest: Final path for the bundle; parent directories are created.
+        url: Source URL (pinned release by default).
+
+    Raises:
+        RuntimeError: On any network/HTTP failure, with the URL in the message.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_suffix(dest.suffix + ".part")
+    print(f"Downloading ATT&CK bundle (~51 MB)\n  from {url}\n  to   {dest}")
+    try:
+        with urllib.request.urlopen(url) as response, partial.open("wb") as out:
+            shutil.copyfileobj(response, out)
+    except urllib.error.URLError as exc:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Failed to download the ATT&CK bundle from {url}: {exc}. "
+            "Check the network, or place the bundle manually and pass "
+            "--attack-file."
+        ) from exc
+    partial.replace(dest)
+    print(f"  done ({dest.stat().st_size / 1_000_000:.0f} MB).")
 
 
 def load_technique_chunks(
@@ -123,25 +167,26 @@ def ingest(
     collection_name: str,
     embed_model: str,
     batch_size: int,
+    refresh_attack: bool = False,
 ) -> None:
     """Run the full ingestion pipeline.
 
     Args:
-        attack_file: Path to the ATT&CK STIX/JSON bundle.
+        attack_file: Path to the ATT&CK STIX/JSON bundle. Downloaded from the
+            pinned release URL when missing.
         runbooks_dir: Directory of markdown runbooks.
         db_dir: Where to persist the Chroma database.
         collection_name: Name of the Chroma collection to write.
         embed_model: sentence-transformers model id (local).
         batch_size: Embedding/persist batch size.
+        refresh_attack: Re-download the ATT&CK bundle even if present.
 
     Raises:
-        FileNotFoundError: If the ATT&CK file or runbooks directory is missing.
+        RuntimeError: If the ATT&CK bundle download fails.
+        FileNotFoundError: If the runbooks directory is missing.
     """
-    if not attack_file.is_file():
-        raise FileNotFoundError(
-            f"ATT&CK bundle not found: {attack_file}. "
-            "Download the Enterprise STIX/JSON into corpus/attack/."
-        )
+    if refresh_attack or not attack_file.is_file():
+        fetch_attack_bundle(attack_file)
     if not runbooks_dir.is_dir():
         raise FileNotFoundError(f"Runbooks directory not found: {runbooks_dir}")
 
@@ -178,22 +223,37 @@ def ingest(
     print(f"Done. {len(chunks)} chunks ingested into '{collection_name}'.")
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments for the ingestion script."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Attach the ingest arguments to ``parser``.
+
+    Shared between the standalone module entry point and the ``triage ingest``
+    subcommand (see cli.py), so both expose exactly the same flags. Defaults
+    are resolved here, at parser-build time, so ``TRIAGE_DATA_DIR`` set in the
+    invoking shell is honored.
+    """
     parser.add_argument(
         "--attack-file",
-        default=DEFAULT_ATTACK_FILE,
-        help="Path to the ATT&CK Enterprise STIX/JSON bundle.",
+        type=Path,
+        default=paths.attack_file(),
+        help="Path to the ATT&CK Enterprise STIX/JSON bundle "
+        "(auto-downloaded here when missing).",
+    )
+    parser.add_argument(
+        "--refresh-attack",
+        action="store_true",
+        help="Re-download the ATT&CK bundle even if it is already present.",
     )
     parser.add_argument(
         "--runbooks-dir",
-        default=DEFAULT_RUNBOOKS_DIR,
-        help="Directory of markdown runbooks.",
+        type=Path,
+        default=paths.packaged_runbooks_dir(),
+        help="Directory of markdown runbooks (defaults to the runbooks "
+        "shipped inside the package).",
     )
     parser.add_argument(
         "--db-dir",
-        default=DEFAULT_DB_DIR,
+        type=Path,
+        default=paths.chroma_dir(),
         help="Directory to persist the Chroma database.",
     )
     parser.add_argument(
@@ -212,20 +272,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=64,
         help="Embedding/persist batch size.",
     )
-    return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
-    """CLI entry point."""
-    args = parse_args(argv)
+def run(args: argparse.Namespace) -> None:
+    """Execute ingestion from parsed arguments (the subcommand handler)."""
     ingest(
-        attack_file=Path(args.attack_file),
-        runbooks_dir=Path(args.runbooks_dir),
-        db_dir=Path(args.db_dir),
+        attack_file=args.attack_file,
+        runbooks_dir=args.runbooks_dir,
+        db_dir=args.db_dir,
         collection_name=args.collection,
         embed_model=args.embed_model,
         batch_size=args.batch_size,
+        refresh_attack=args.refresh_attack,
     )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Standalone entry point (`python -m triage.ingest`)."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_arguments(parser)
+    run(parser.parse_args(argv))
 
 
 if __name__ == "__main__":
