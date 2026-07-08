@@ -131,10 +131,12 @@ select = ["E", "W", "F", "I", "B", "UP"]
 # build/ copy of the package would otherwise collide with triage/ as a
 # duplicate module named "triage").
 files = ["triage", "tests"]
-# Check against the OLDEST supported Python (the requires-python floor), not
-# whatever interpreter runs mypy — code that type-checks on 3.11 semantics
-# works on everything newer, but not vice versa.
-python_version = "3.11"
+# NO python_version pin, deliberately. Pinning "3.11" here would make mypy
+# apply 3.11 syntax rules to EVERYTHING it reads — including type stubs
+# inside installed dependencies. Newer numpy stubs use PEP 695 `type`
+# statements (3.12+ syntax), so the pin broke CI's 3.14 job on numpy's own
+# files. Each environment checks against its own interpreter instead; the
+# 3.11 floor is still enforced because CI's matrix includes a real 3.11 job.
 # CLAUDE.md mandates type hints everywhere; this makes mypy enforce that
 # instead of silently skipping unannotated functions (its default).
 disallow_untyped_defs = true

@@ -238,6 +238,12 @@ produces a grounded verdict end-to-end without a human typing anything.
     replacing the per-module mypy disable_error_code entries.
     Each ignore is commented in pyproject.toml and should be removed when
     the author applies or rejects the fix.
+  - Post-push CI fix: mypy's python_version = "3.11" pin was removed. It
+    applied 3.11 syntax rules to installed dependencies' type stubs too,
+    and the 3.14 job's newer numpy ships PEP 695 `type`-statement stubs
+    (3.12+ syntax) — instant syntax error in numpy's own files. Each job
+    now checks its own interpreter's semantics; the 3.11 floor is still
+    enforced by the matrix's real 3.11 job.
   - CI matrix is 3.11 (requires-python floor) + 3.14 (dev machine) only;
     intermediate versions add a full torch install each for little signal.
     CI installs CPU-only torch (~200 MB) from the pytorch cpu index before
