@@ -40,7 +40,14 @@ packaged runbooks (triage/corpus/) ───┘                                 
   judges its relevance instead of assuming it.
 
 **Stack:** Python 3.11+ · `sentence-transformers` (`bge-small-en-v1.5`, local) ·
-`chromadb` · `anthropic` (Claude) · `pydantic` v2. Installable CLI.
+`chromadb` · `anthropic` (Claude) · `pydantic` v2 · `fastapi` + `uvicorn`.
+Installable CLI + HTTP service.
+
+**Staleness guard:** ingestion stamps the store with a fingerprint (app
+version, embedding model, chunking parameters, corpus identity). Query and
+serve refuse a store whose fingerprint no longer matches the running code —
+"re-run `triage ingest`" — so an app upgrade can never silently serve verdicts
+from an index built by older code.
 
 ## Install
 
@@ -105,6 +112,33 @@ triage query "Scheduled task created remotely via schtasks from a workstation to
 # options: --top-k --db-dir --collection --gen-model --rewrite-model --no-rewrite
 ```
 
+**`triage serve`** — run the triage HTTP API. This is the single integration
+surface: the upcoming UI and SIEM webhook are thin clients of the same
+endpoint, backed by the same pipeline as `triage query`. The embedding model
+and Chroma collection load once at startup; a missing or stale store aborts
+startup with the `triage ingest` remedy instead of serving errors. Binds
+`127.0.0.1` by default — expose it deliberately with `--host 0.0.0.0`.
+
+```bash
+triage serve                     # http://127.0.0.1:8000, interactive docs at /docs
+# options: --host --port --db-dir --collection --embed-model --gen-model
+#          --rewrite-model --no-rewrite
+```
+
+```bash
+# POST an alert, get the verdict JSON (same schema as the CLI output):
+curl -s http://127.0.0.1:8000/triage \
+  -H "Content-Type: application/json" \
+  -d '{"alert": "Multiple failed logons followed by a successful logon from a new country."}'
+# Windows (PowerShell):
+#   Invoke-RestMethod http://127.0.0.1:8000/triage -Method Post -ContentType "application/json" `
+#     -Body '{"alert": "..."}'
+```
+
+Responses: `200` with the verdict; `422` if the request body fails validation;
+`502` if the upstream model produced nothing the service can vouch for
+(API failure, refusal, or a verdict that failed grounding validation).
+
 ## Data locations
 
 The app never assumes a repo checkout. Mutable data (the Chroma store, the
@@ -154,6 +188,9 @@ triage/               core package
   retrieve.py         top-k retrieval + sibling-chunk merge
   rewrite.py          alert → retrieval-optimized query rewrite
   query.py            query pipeline + grounding prompt
+  fingerprint.py      store staleness fingerprint (written at ingest, checked at load)
+  api.py              FastAPI app: POST /triage, GET /health
+  serve.py            `triage serve` (uvicorn runner)
   schema.py           Pydantic output contract for the verdict
   corpus/runbooks/    hand-written runbooks (markdown, ship in the wheel)
 corpus/

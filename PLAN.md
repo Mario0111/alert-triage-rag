@@ -126,11 +126,30 @@ Author follow-ups proposed by lint/type findings (NOT applied — see
 decisions log): zip(strict=True) in retrieve.py, StrEnum in schema.py,
 type-narrowing in retrieve.py/chunk.py.
 
-### Phase 9 — FastAPI service  [ ]
+### Phase 9 — FastAPI service  [x]
 Claude-owned plumbing; schema.py stays the contract. `POST /triage`
 (alert text in -> validated verdict JSON out), `GET /health`. The service
 is the single integration surface: CLI, UI, and SIEM all call the same
 core. Done when: uvicorn serves a verdict with citations via curl.
+Delivered:
+- Staleness fingerprint landed FIRST (fingerprint.py): ingest stamps the
+  collection metadata with one json fingerprint; query.load_collection
+  (shared by CLI + API) refuses a mismatched or fingerprint-less store
+  with "re-run triage ingest". Fields per author decision — see log.
+- triage/api.py (app factory, lifespan-loaded pipeline on app.state,
+  request model + TriageVerdict AS the response model) + triage/serve.py
+  (`triage serve`, uvicorn, binds 127.0.0.1 by default). Core refactor
+  confined to plumbing: query.triage_alert() is the shared per-alert
+  core; CLI's triage() wraps it. Grounding prompt untouched.
+- fastapi/uvicorn as pinned runtime deps (not an extra); httpx in [dev]
+  for TestClient. Version bumped to 0.2.0 (participates in fingerprint).
+- 23 new hermetic tests (test_fingerprint.py, test_api.py): TestClient
+  over a faked pipeline w/ real in-memory retrieval; 422/502 mappings;
+  startup refusal on missing/stale store and missing API key. 65 total.
+Verified: ruff/mypy/pytest green from a TRIAGE_DATA_DIR-less shell; real
+end-to-end over HTTP (re-ingested dev store -> uvicorn -> verdict with
+citations via Invoke-RestMethod); old pre-fingerprint store and an empty
+data dir both refused at startup with the ingest remedy.
 
 ### Phase 10 — Docker + releases  [ ]
 Claude-owned, teaching mode. Multi-stage Dockerfile (torch layer cached),
@@ -258,6 +277,56 @@ produces a grounded verdict end-to-end without a human typing anything.
     it and fails with "re-run triage ingest". Paired work: the plumbing is
     Claude-owned, but WHICH fields define staleness (chunking params) is
     the author's call.
+- Phase 9 decisions:
+  - Staleness fingerprint fields (author decision, all enforced): app
+    version (strict — every release forces one re-ingest; accepted as the
+    only signal that chunking LOGIC changed, not just its constants),
+    embedding model id (mismatched vector spaces = silent garbage
+    retrieval, the failure the feature exists for), chunking constants
+    (the four token-budget constants; TECHNIQUE_FIELD_CHUNK_CHARS
+    excluded — fallback path real ingest never takes), ATT&CK pin URL,
+    and packaged-runbooks content hash. A store built from a custom
+    --runbooks-dir records its hash but is exempt from the runbooks
+    comparison: enforcing it would create a staleness no ingest run
+    could ever clear. Stored as ONE json string in collection metadata
+    (Chroma metadata is flat scalars; one value diffs atomically and the
+    error names each mismatched field).
+  - Missing/stale store = the server REFUSES TO START (lifespan raises,
+    uvicorn exits with the "re-run triage ingest" message) rather than
+    booting and answering 503. Fail-loudly for a CLI-launched service:
+    the operator is at the terminal, and a crashed process is more
+    visible than a permanently-unready one. Revisit at Phase 10 if
+    container orchestration wants a readiness-probe (503) pattern.
+  - HTTP status mapping: 422 = request body fails Pydantic validation
+    (FastAPI default, request never reaches the pipeline); 502 = the
+    upstream model failed us (Anthropic API error, refusal, truncation,
+    or a verdict still failing schema/grounding validation after the
+    feedback retry) — 502's literal meaning, "invalid response from an
+    upstream server". 200 only with a fully validated, grounded verdict.
+  - fastapi + uvicorn are RUNTIME deps, not an extra: `triage serve` is
+    a documented core verb and the Stage 2 architecture's centerpiece;
+    an [api] extra would make it an ImportError for plain pipx installs
+    to save ~15 MB of pure-Python wheels next to torch. Plain uvicorn
+    (not uvicorn[standard]: uvloop/httptools are perf extras this
+    single-user service doesn't need, and uvloop skips Windows). uvicorn
+    was already a transitive chromadb dep — declaring it turns an
+    accident into a pinned contract. httpx (TestClient's engine) added
+    to [dev] on the same reasoning: tests import it transitively today,
+    declare what you rely on.
+  - The endpoint is a plain `def` (not `async def`): the pipeline blocks
+    for seconds, and FastAPI runs sync endpoints in a threadpool so
+    /health stays responsive; an async endpoint running blocking code
+    would freeze the event loop.
+  - uvicorn.run gets the app OBJECT from the factory (no module-level
+    app), so --reload/--workers (import-string features) are out;
+    multiple workers would duplicate the ~100 MB embedder anyway —
+    scale-out is Phase 10+ (more containers).
+  - Test-harness gotcha (companion to the EphemeralClient one): chromadb
+    caches one client "system" per store path and refuses to reopen a
+    path with UNEQUAL settings. Tests therefore disable telemetry via
+    the ANONYMIZED_TELEMETRY env var (autouse fixture) instead of
+    passing Settings(anonymized_telemetry=False), so production code's
+    default-settings open of the same path stays compatible.
 - SIEM: Wazuh. Free, single-VM friendly, ships rule->ATT&CK technique
   mappings (dovetails with the corpus), and its integratord hook makes
   "call a script with the alert JSON" a first-class feature.
@@ -286,15 +355,9 @@ produces a grounded verdict end-to-end without a human typing anything.
   integratord script) so the triage API isn't called thousands of times a
   day. Which threshold?
 - Publish to PyPI, or keep install as `pipx install` from the GitHub repo?
-- Staleness detection: the Chroma store is built by one app version and
-  survives updates (data dir is deliberately untouched by installs), so a
-  code update that changes chunking/runbooks leaves a silently stale store
-  unless the id scheme happens to drift (which retrieve.py catches loudly).
-  Candidate fix: write a fingerprint (app version + corpus hash + chunking
-  params) into the collection metadata at ingest, check it at query time
-  and fail with "re-run triage ingest". DECIDED (Phase 8): implement at
-  the start of Phase 9 — see the decisions-log entry for the mechanism
-  and the author-owned part (which fields define staleness).
+- Staleness detection: DONE at the start of Phase 9 (fingerprint.py) —
+  see the Phase 9 decisions-log entry for the enforced fields and the
+  custom---runbooks-dir exemption.
 - Uninstall leaves the data dir behind (~700 MB with the bundle + store):
   normal CLI-app behavior, but README could gain an "uninstall fully"
   note (`pipx uninstall` + delete %LOCALAPPDATA%\alert-triage-rag).

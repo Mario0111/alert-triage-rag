@@ -2,23 +2,22 @@
 
 ``[project.scripts]`` in pyproject.toml points the ``triage`` console script at
 `main` below. A single top-level command with subcommands (``triage ingest``,
-``triage query``) was chosen over separate ``triage-ingest``/``triage-query``
+``triage query``, ``triage serve``) was chosen over separate per-verb
 executables: one name on the user's PATH, ``triage --help`` enumerates every
-verb, and future verbs (``triage serve`` in Stage 2's API phase) slot in
-without minting new binaries.
+verb, and new verbs slot in without minting new binaries — exactly how
+``serve`` landed in Stage 2's API phase.
 
 This module owns only dispatch. The flags and handlers live next to the code
-they configure — ``ingest.add_arguments``/``ingest.run`` and
-``query.add_arguments``/``query.run`` — and are shared with the original
-``python -m triage.ingest`` / ``python -m triage.query`` entry points, which
-keep working identically.
+they configure — each module's ``add_arguments``/``run`` pair — and are shared
+with the original ``python -m triage.<verb>`` entry points, which keep working
+identically.
 """
 
 from __future__ import annotations
 
 import argparse
 
-from . import ingest, query
+from . import ingest, query, serve
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -52,6 +51,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     query.add_arguments(query_parser)
     query_parser.set_defaults(func=query.run)
+
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the triage HTTP API (POST /triage, GET /health) via uvicorn.",
+        description=serve.__doc__.splitlines()[0],
+    )
+    serve.add_arguments(serve_parser)
+    serve_parser.set_defaults(func=serve.run)
 
     args = parser.parse_args(argv)
     args.func(args)

@@ -21,7 +21,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alert-triage-rag"
-version = "0.1.0"
+# NOTE: the version participates in the staleness fingerprint (fingerprint.py):
+# bumping it makes existing stores stale, forcing one `triage ingest` per
+# release — a deliberate author decision (Phase 9), because a version bump is
+# the only signal that chunking LOGIC (not just its constants) may have changed.
+version = "0.2.0"
 description = "Retrieval-augmented triage assistant for SOC/MDR alerts: MITRE ATT&CK + runbook grounded verdicts with citations."
 readme = "README.md"
 # The oldest Python this code supports. pip refuses to install onto anything
@@ -50,6 +54,15 @@ dependencies = [
     # ~/.local/share on Linux, ~/Library/Application Support on macOS) so an
     # installed CLI never assumes a repo checkout.
     "platformdirs==4.10.0",
+    # The HTTP service layer (Phase 9). Runtime deps, NOT an extra: `triage
+    # serve` is a documented core verb and the app's single integration
+    # surface — an extra would turn it into an ImportError for every plain
+    # pipx install, to save ~15 MB of pure-Python wheels next to a
+    # multi-hundred-MB torch. fastapi (+ its engine starlette) is the only
+    # genuinely new package; uvicorn already arrives as a chromadb dependency,
+    # and declaring it makes that implicit dependency an explicit, pinned one.
+    "fastapi==0.139.0",
+    "uvicorn==0.51.0",
 ]
 
 # Optional dependency groups ("extras"). NOT installed by default: a user who
@@ -69,6 +82,12 @@ dev = [
     # Static type checker: verifies the type hints (which CLAUDE.md mandates
     # everywhere) actually hold together across module boundaries.
     "mypy==2.2.0",
+    # FastAPI's TestClient is a thin wrapper over httpx: tests make real HTTP
+    # requests against the ASGI app in-process, no socket. Already present
+    # transitively (anthropic depends on it) — declared because tests import
+    # it directly, and relying on an undeclared transitive dep is how installs
+    # break when someone else's dependency tree changes.
+    "httpx==0.28.1",
 ]
 
 # Entry points: the reason `triage` exists as a real command after install.

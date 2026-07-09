@@ -33,11 +33,13 @@ from pathlib import Path
 
 import anthropic
 import chromadb
+from chromadb.errors import NotFoundError
 from pydantic import ValidationError
 from sentence_transformers import SentenceTransformer
 
 from . import paths
-from .ingest import DEFAULT_COLLECTION, DEFAULT_EMBED_MODEL
+from .fingerprint import check_fingerprint
+from .ingest import ATTACK_BUNDLE_URL, DEFAULT_COLLECTION, DEFAULT_EMBED_MODEL
 from .retrieve import RetrievedChunk, retrieve
 from .rewrite import DEFAULT_REWRITE_MODEL, ensure_embeddable, rewrite_alert
 from .schema import SourceType, TriageVerdict
@@ -290,27 +292,104 @@ def generate_verdict(
 
 
 def load_collection(
-    db_dir: Path, collection_name: str
+    db_dir: Path, collection_name: str, embed_model: str = DEFAULT_EMBED_MODEL
 ) -> chromadb.Collection:
     """Open the persisted Chroma collection produced by ingestion.
+
+    Every query-side consumer (CLI query, API startup) funnels through here,
+    so this is where the staleness gate lives: a store built by different
+    code, corpus, or embedding model than what is running now is refused
+    before a single similarity search can quietly return garbage.
 
     Args:
         db_dir: Directory of the persisted Chroma database.
         collection_name: Name of the collection to open.
+        embed_model: The model id the caller will embed queries with; must
+            match the model the store was built with (see fingerprint.py).
 
     Returns:
         The Chroma collection, ready to query.
 
     Raises:
-        FileNotFoundError: If the database directory does not exist (i.e.
-            ingestion has not been run yet).
+        FileNotFoundError: If the database directory or the collection does
+            not exist (i.e. ingestion has not been run yet).
+        StaleStoreError: If the store's fingerprint is missing or no longer
+            matches the running code/corpus (re-run ``triage ingest``).
     """
     if not db_dir.is_dir():
         raise FileNotFoundError(
             f"Chroma database not found at {db_dir}. Run `triage ingest` first."
         )
     client = chromadb.PersistentClient(path=str(db_dir))
-    return client.get_collection(name=collection_name)
+    try:
+        collection = client.get_collection(name=collection_name)
+    except NotFoundError as exc:
+        raise FileNotFoundError(
+            f"Collection {collection_name!r} not found in the Chroma database "
+            f"at {db_dir}. Run `triage ingest` first."
+        ) from exc
+    check_fingerprint(
+        collection.metadata, embed_model=embed_model, attack_source=ATTACK_BUNDLE_URL
+    )
+    return collection
+
+
+def triage_alert(
+    alert_text: str,
+    embedder: SentenceTransformer,
+    collection: chromadb.Collection,
+    gen_model: str = DEFAULT_GEN_MODEL,
+    rewrite_model: str = DEFAULT_REWRITE_MODEL,
+    top_k: int = DEFAULT_TOP_K,
+    no_rewrite: bool = False,
+    client: anthropic.Anthropic | None = None,
+) -> TriageVerdict:
+    """Triage one alert against ALREADY-LOADED pipeline components.
+
+    This is the single shared core behind every interface (CLAUDE.md's
+    integration rule): the CLI wraps it in `triage` (load, call, print) and
+    the API calls it per request with components loaded once at startup —
+    which is exactly why it takes an embedder and collection instead of
+    loading them: loading the embedding model costs seconds and hundreds of
+    MB, and must not happen per alert.
+
+    rewrite -> retrieve -> grounded generation -> validated verdict.
+
+    Args:
+        alert_text: The alert as the analyst provided it (prose or raw log).
+        embedder: Loaded local sentence-transformers model.
+        collection: Opened Chroma collection (see `load_collection`).
+        gen_model: Claude model id for generation.
+        rewrite_model: Claude model id for the pre-retrieval query rewrite.
+        top_k: Number of documents to retrieve.
+        no_rewrite: Embed the raw alert text directly, skipping the rewrite
+            (escape hatch / A-B comparison; the token-window guard still runs).
+        client: Optional pre-built Anthropic client, shared by the rewrite and
+            generation stages (reads ``ANTHROPIC_API_KEY`` from the
+            environment when omitted).
+
+    Returns:
+        The validated, grounded verdict.
+    """
+    # The rewrite shapes ONLY the search text; the original alert stays the
+    # evidence for the grounding prompt below.
+    if no_rewrite:
+        search_text = alert_text
+    else:
+        search_text = rewrite_alert(alert_text, model=rewrite_model, client=client)
+        print(f"Search query (rewritten): {search_text}")
+    ensure_embeddable(search_text, embedder.tokenizer)
+
+    chunks = retrieve(search_text, collection, embedder, k=top_k)
+    print(
+        f"Retrieved {len(chunks)} sources: "
+        + ", ".join(
+            chunk.id + (" (backfilled)" if chunk.backfilled else "")
+            for chunk in chunks
+        )
+    )
+
+    return generate_verdict(alert_text, chunks, model=gen_model, client=client)
 
 
 def triage(
@@ -323,10 +402,11 @@ def triage(
     top_k: int,
     no_rewrite: bool = False,
 ) -> TriageVerdict:
-    """Run the full query pipeline for a single alert.
+    """Run the full query pipeline for a single alert (the CLI entry).
 
-    rewrite -> retrieve -> grounded generation -> validated verdict, printed
-    as JSON with the citations that make it traceable.
+    Loads the pipeline components (one-shot: the CLI triages one alert per
+    process), delegates to the shared `triage_alert` core, and prints the
+    verdict as JSON with the citations that make it traceable.
 
     Args:
         alert_text: The alert as the analyst provided it (prose or raw log).
@@ -342,28 +422,21 @@ def triage(
     Returns:
         The validated, grounded verdict.
     """
+    # Store first, embedder second: the store/staleness check is instant and
+    # its failures ("run triage ingest") shouldn't wait behind a multi-second
+    # embedding-model load. Same ordering as the API's startup loader.
+    collection = load_collection(db_dir, collection_name, embed_model=embed_model)
     embedder = SentenceTransformer(embed_model)
-    collection = load_collection(db_dir, collection_name)
 
-    # The rewrite shapes ONLY the search text; the original alert stays the
-    # evidence for the grounding prompt below.
-    if no_rewrite:
-        search_text = alert_text
-    else:
-        search_text = rewrite_alert(alert_text, model=rewrite_model)
-        print(f"Search query (rewritten): {search_text}")
-    ensure_embeddable(search_text, embedder.tokenizer)
-
-    chunks = retrieve(search_text, collection, embedder, k=top_k)
-    print(
-        f"Retrieved {len(chunks)} sources: "
-        + ", ".join(
-            chunk.id + (" (backfilled)" if chunk.backfilled else "")
-            for chunk in chunks
-        )
+    verdict = triage_alert(
+        alert_text,
+        embedder,
+        collection,
+        gen_model=gen_model,
+        rewrite_model=rewrite_model,
+        top_k=top_k,
+        no_rewrite=no_rewrite,
     )
-
-    verdict = generate_verdict(alert_text, chunks, model=gen_model)
     print(verdict.model_dump_json(indent=2))
     return verdict
 

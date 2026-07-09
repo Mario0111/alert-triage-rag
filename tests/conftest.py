@@ -33,6 +33,23 @@ from chromadb.config import Settings
 from triage.schema import Citation, Severity, SourceType, TriageVerdict, Verdict
 
 
+@pytest.fixture(autouse=True)
+def _no_chroma_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable chromadb telemetry for every test via the environment.
+
+    chromadb's ``Settings`` reads this env var on every construction, so the
+    no-network rule holds even for code paths that build their own default
+    ``Settings`` internally (e.g. ``query.load_collection``'s
+    PersistentClient). Doing it by env rather than passing
+    ``Settings(anonymized_telemetry=False)`` everywhere also avoids a chromadb
+    gotcha: it caches one client "system" per store path and REFUSES to open
+    the same path twice with unequal settings — a test that creates a store
+    with explicit settings would make the production code's default-settings
+    open of that same path blow up.
+    """
+    monkeypatch.setenv("ANONYMIZED_TELEMETRY", "False")
+
+
 class FakeTokenizer:
     """Whitespace tokenizer: one word = one token, and words ARE the ids.
 
@@ -70,6 +87,10 @@ class FakeEmbedder:
 
     def __init__(self, vector: list[float]) -> None:
         self.vector = vector
+        # The real SentenceTransformer exposes its tokenizer as an attribute;
+        # query.triage_alert reads it for the embed-window guard
+        # (rewrite.ensure_embeddable), so the fake carries one too.
+        self.tokenizer = FakeTokenizer()
 
     def encode(self, texts: list[str], **_: Any) -> list[np.ndarray]:
         return [np.array(self.vector, dtype=np.float32) for _ in texts]

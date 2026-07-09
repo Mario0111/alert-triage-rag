@@ -32,6 +32,7 @@ from sentence_transformers import SentenceTransformer
 
 from . import paths, stix
 from .chunk import Chunk, chunk_runbook, chunk_techniques
+from .fingerprint import FINGERPRINT_KEY, build_fingerprint
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -216,7 +217,17 @@ def ingest(
         pass  # first run / nothing to drop
     collection = client.create_collection(
         name=collection_name,
-        metadata={"hnsw:space": "cosine"},  # bge-small-en-v1.5 is a cosine model
+        metadata={
+            "hnsw:space": "cosine",  # bge-small-en-v1.5 is a cosine model
+            # Staleness fingerprint (see fingerprint.py): records the code +
+            # corpus this store was built from, so query-side loading can
+            # refuse to serve from an index the current code no longer matches.
+            FINGERPRINT_KEY: build_fingerprint(
+                embed_model=embed_model,
+                runbooks_dir=runbooks_dir,
+                attack_source=ATTACK_BUNDLE_URL,
+            ),
+        },
     )
     embed_and_persist(chunks, embedder, collection, batch_size)
 
