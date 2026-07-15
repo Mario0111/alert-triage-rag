@@ -317,6 +317,16 @@ produces a grounded verdict end-to-end without a human typing anything.
     for seconds, and FastAPI runs sync endpoints in a threadpool so
     /health stays responsive; an async endpoint running blocking code
     would freeze the event loop.
+- Versioning/release policy (decided after Phase 9, ahead of Phase 10):
+  keep app_version STRICTLY enforced in the fingerprint and bump the
+  version with each phase/release — pyproject.toml moved to 0.3.0 and the
+  first tagged release (Phase 10) will be v0.3.0. The cost (every release
+  stales every store, forcing one `triage ingest`) was weighed against
+  alternatives (drop app_version from the enforced set, or a hand-bumped
+  store-schema version) and accepted deliberately: this is a portfolio
+  project with essentially one user, so one simple rule beats bookkeeping
+  that exists to save a rebuild nobody is waiting on. Revisit only if the
+  project ever gains real users.
   - uvicorn.run gets the app OBJECT from the factory (no module-level
     app), so --reload/--workers (import-string features) are out;
     multiple workers would duplicate the ~100 MB embedder anyway —

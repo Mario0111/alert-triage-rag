@@ -25,7 +25,7 @@ name = "alert-triage-rag"
 # bumping it makes existing stores stale, forcing one `triage ingest` per
 # release — a deliberate author decision (Phase 9), because a version bump is
 # the only signal that chunking LOGIC (not just its constants) may have changed.
-version = "0.2.0"
+version = "0.3.0"
 description = "Retrieval-augmented triage assistant for SOC/MDR alerts: MITRE ATT&CK + runbook grounded verdicts with citations."
 readme = "README.md"
 # The oldest Python this code supports. pip refuses to install onto anything
