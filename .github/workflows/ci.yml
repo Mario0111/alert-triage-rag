@@ -60,9 +60,11 @@ jobs:
 
       # -e (editable) matches the contributor setup; [dev] pulls in
       # pytest/ruff/mypy at the exact pinned versions from pyproject.toml,
-      # so CI checks with the same tools a contributor runs locally.
+      # so CI checks with the same tools a contributor runs locally. [ui]
+      # (streamlit) is added so the Streamlit UI test actually RUNS here —
+      # without it test_ui.py importorskip-skips and the UI goes unchecked.
       - name: Install package + dev tools
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,ui]"
 
       # The three gates, cheapest first: a lint failure aborts the job
       # before the slower type check and test run spend minutes on code

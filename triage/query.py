@@ -29,6 +29,7 @@ paraphrase.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 
 import anthropic
@@ -334,6 +335,23 @@ def load_collection(
     return collection
 
 
+@dataclass(frozen=True)
+class TriageResult:
+    """A verdict together with the sources retrieval surfaced to ground it.
+
+    `triage_alert` returns both so every interface can show its work: the CLI
+    prints the verdict, and the API (and through it the Streamlit UI) exposes
+    the retrieved documents — including any runbook appended by the backfill
+    guarantee — as the citation panel behind the verdict. The verdict alone
+    cannot carry this: `schema.py`'s citations are only the sources the MODEL
+    chose to cite (with its short quotes), not the full retrieved set and not
+    the ``backfilled`` marking, which lives on `RetrievedChunk` in retrieval.
+    """
+
+    verdict: TriageVerdict
+    retrieved: list[RetrievedChunk]
+
+
 def triage_alert(
     alert_text: str,
     embedder: SentenceTransformer,
@@ -343,7 +361,7 @@ def triage_alert(
     top_k: int = DEFAULT_TOP_K,
     no_rewrite: bool = False,
     client: anthropic.Anthropic | None = None,
-) -> TriageVerdict:
+) -> TriageResult:
     """Triage one alert against ALREADY-LOADED pipeline components.
 
     This is the single shared core behind every interface (CLAUDE.md's
@@ -369,7 +387,8 @@ def triage_alert(
             environment when omitted).
 
     Returns:
-        The validated, grounded verdict.
+        A `TriageResult`: the validated, grounded verdict plus the retrieved
+        source documents (with backfill markings) it was grounded on.
     """
     # The rewrite shapes ONLY the search text; the original alert stays the
     # evidence for the grounding prompt below.
@@ -389,7 +408,8 @@ def triage_alert(
         )
     )
 
-    return generate_verdict(alert_text, chunks, model=gen_model, client=client)
+    verdict = generate_verdict(alert_text, chunks, model=gen_model, client=client)
+    return TriageResult(verdict=verdict, retrieved=chunks)
 
 
 def triage(
@@ -428,7 +448,7 @@ def triage(
     collection = load_collection(db_dir, collection_name, embed_model=embed_model)
     embedder = SentenceTransformer(embed_model)
 
-    verdict = triage_alert(
+    result = triage_alert(
         alert_text,
         embedder,
         collection,
@@ -437,8 +457,10 @@ def triage(
         top_k=top_k,
         no_rewrite=no_rewrite,
     )
-    print(verdict.model_dump_json(indent=2))
-    return verdict
+    # The CLI shows only the verdict JSON; the retrieved-source detail in
+    # `result.retrieved` is what the HTTP API (and the UI) surface instead.
+    print(result.verdict.model_dump_json(indent=2))
+    return result.verdict
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

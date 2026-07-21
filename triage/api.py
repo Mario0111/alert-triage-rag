@@ -35,10 +35,14 @@ Web-service concepts this module leans on (teaching notes):
   `TriageRequest` BEFORE the endpoint runs — a missing/empty alert never
   reaches the pipeline and is rejected as 422 Unprocessable Entity, FastAPI's
   standard "the request was well-formed HTTP but the body fails validation"
-  status. The response is `schema.TriageVerdict` ITSELF (declared via the
-  return annotation): the verdict contract and the API contract are the same
-  object, so they cannot drift. Both models also feed the auto-generated
-  OpenAPI docs at ``/docs``.
+  status. The response is a `TriageResponse` ENVELOPE: `schema.TriageVerdict`
+  unchanged (still the single output contract, so it cannot drift), plus a
+  `retrieved` list carrying the sources retrieval surfaced — full text, source
+  type, and the ``backfilled`` marking — which the verdict's own citations
+  (only what the model chose to cite) cannot express. Splitting the retrieval
+  PROVENANCE from the model's OUTPUT contract is why this wraps TriageVerdict
+  rather than adding fields to it. All models feed the OpenAPI docs at
+  ``/docs``.
 
 - **Status mapping.** 200: verdict produced. 422: bad input (Pydantic).
   502 Bad Gateway: this service is fine, but its upstream (the Anthropic API)
@@ -69,9 +73,16 @@ from sentence_transformers import SentenceTransformer
 
 from .fingerprint import app_version
 from .ingest import DEFAULT_COLLECTION, DEFAULT_EMBED_MODEL
-from .query import DEFAULT_GEN_MODEL, DEFAULT_TOP_K, load_collection, triage_alert
+from .query import (
+    DEFAULT_GEN_MODEL,
+    DEFAULT_TOP_K,
+    _source_kind,
+    load_collection,
+    triage_alert,
+)
+from .retrieve import RetrievedChunk
 from .rewrite import DEFAULT_REWRITE_MODEL
-from .schema import TriageVerdict
+from .schema import SourceType, TriageVerdict
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -117,6 +128,75 @@ class TriageRequest(BaseModel):
         ge=1,
         le=25,
         description="How many source documents to retrieve as grounding.",
+    )
+
+
+class RetrievedSource(BaseModel):
+    """One retrieved document, as exposed to API clients (the UI citation panel).
+
+    This is the retrieval provenance the verdict itself cannot carry: the FULL
+    reassembled source text, and the ``backfilled`` marking that says a runbook
+    was appended by the retrieval guarantee rather than matched by similarity.
+    A client links a verdict `Citation` back to its source by
+    ``id == Citation.chunk_id``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        description="Citable id: the ATT&CK technique id or the runbook filename."
+    )
+    source_type: SourceType = Field(
+        description="Whether this document came from ATT&CK or a runbook."
+    )
+    name: str = Field(
+        description="Human-friendly label: technique name or runbook filename."
+    )
+    backfilled: bool = Field(
+        description=(
+            "True when this runbook was appended by the retrieval guarantee "
+            "(it did NOT place in the similarity top-k) — the UI marks it so an "
+            "analyst weighs its relevance rather than assuming it."
+        )
+    )
+    score: float = Field(
+        description="Cosine distance of the best-matching chunk (lower is nearer)."
+    )
+    text: str = Field(
+        description="The full reassembled document text used as grounding."
+    )
+
+
+class TriageResponse(BaseModel):
+    """Body of ``POST /triage``: the grounded verdict plus its retrieved sources.
+
+    The verdict stays `schema.TriageVerdict` unchanged (the output contract is
+    the single source of truth); ``retrieved`` wraps it with the retrieval
+    detail every client — CLI, UI, SIEM — can render. Kept as an envelope,
+    rather than fields on TriageVerdict, so the model's OUTPUT contract and the
+    service's retrieval PROVENANCE evolve independently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: TriageVerdict
+    retrieved: list[RetrievedSource]
+
+
+def _to_source(chunk: RetrievedChunk) -> RetrievedSource:
+    """Map a retrieval `RetrievedChunk` to the wire `RetrievedSource`.
+
+    ``_source_kind`` (query.py) is the one canonical ATT&CK-vs-runbook
+    discriminator, reused here so the response can never disagree with what the
+    grounding prompt and citation checks used.
+    """
+    return RetrievedSource(
+        id=chunk.id,
+        source_type=_source_kind(chunk),
+        name=str(chunk.metadata.get("name", chunk.id)),
+        backfilled=chunk.backfilled,
+        score=chunk.score,
+        text=chunk.text,
     )
 
 
@@ -196,10 +276,10 @@ def create_app(settings: ApiSettings) -> FastAPI:
     def triage_endpoint(
         body: TriageRequest,
         pipeline: Annotated[Pipeline, Depends(get_pipeline)],
-    ) -> TriageVerdict:
-        """Triage one alert; the response IS `schema.TriageVerdict`."""
+    ) -> TriageResponse:
+        """Triage one alert; the response wraps the verdict with its sources."""
         try:
-            return triage_alert(
+            result = triage_alert(
                 body.alert,
                 pipeline.embedder,
                 pipeline.collection,
@@ -219,5 +299,10 @@ def create_app(settings: ApiSettings) -> FastAPI:
             # validation after the feedback retry (ValueError). All mean the
             # upstream model produced nothing this service will vouch for.
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        return TriageResponse(
+            verdict=result.verdict,
+            retrieved=[_to_source(chunk) for chunk in result.retrieved],
+        )
 
     return app

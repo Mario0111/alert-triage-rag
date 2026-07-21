@@ -40,8 +40,8 @@ packaged runbooks (triage/corpus/) ───┘                                 
   judges its relevance instead of assuming it.
 
 **Stack:** Python 3.11+ · `sentence-transformers` (`bge-small-en-v1.5`, local) ·
-`chromadb` · `anthropic` (Claude) · `pydantic` v2 · `fastapi` + `uvicorn`.
-Installable CLI + HTTP service.
+`chromadb` · `anthropic` (Claude) · `pydantic` v2 · `fastapi` + `uvicorn` ·
+`streamlit` (optional `[ui]` extra). Installable CLI + HTTP service + browser UI.
 
 **Staleness guard:** ingestion stamps the store with a fingerprint (app
 version, embedding model, chunking parameters, corpus identity). Query and
@@ -113,8 +113,9 @@ triage query "Scheduled task created remotely via schtasks from a workstation to
 ```
 
 **`triage serve`** — run the triage HTTP API. This is the single integration
-surface: the upcoming UI and SIEM webhook are thin clients of the same
-endpoint, backed by the same pipeline as `triage query`. The embedding model
+surface: the Streamlit UI (`triage ui`) and the upcoming SIEM webhook are thin
+clients of the same endpoint, backed by the same pipeline as `triage query`.
+The embedding model
 and Chroma collection load once at startup; a missing or stale store aborts
 startup with the `triage ingest` remedy instead of serving errors. Binds
 `127.0.0.1` by default — expose it deliberately with `--host 0.0.0.0`.
@@ -126,7 +127,7 @@ triage serve                     # http://127.0.0.1:8000, interactive docs at /d
 ```
 
 ```bash
-# POST an alert, get the verdict JSON (same schema as the CLI output):
+# POST an alert, get back {"verdict": {...}, "retrieved": [...]}:
 curl -s http://127.0.0.1:8000/triage \
   -H "Content-Type: application/json" \
   -d '{"alert": "Multiple failed logons followed by a successful logon from a new country."}'
@@ -135,9 +136,27 @@ curl -s http://127.0.0.1:8000/triage \
 #     -Body '{"alert": "..."}'
 ```
 
-Responses: `200` with the verdict; `422` if the request body fails validation;
+The response is an **envelope**: `verdict` is the `schema.py` contract exactly
+as the CLI prints it, and `retrieved` lists the source documents retrieval
+surfaced — full text, source type, and the `backfilled` marking — so a client
+(the UI's citation panels) can show the evidence the verdict alone can't carry.
+
+Responses: `200` with the envelope; `422` if the request body fails validation;
 `502` if the upstream model produced nothing the service can vouch for
 (API failure, refusal, or a verdict that failed grounding validation).
+
+**`triage ui`** — launch the Streamlit UI, a thin browser client of the API
+(it calls `POST /triage` over HTTP and imports no pipeline code of its own).
+Streamlit is an optional extra, so install it first with
+`pip install "alert-triage-rag[ui]"` (a plain install skips it). Point the UI
+at a running `triage serve` with `--api-url` or the `TRIAGE_API_URL` env var
+(default `http://127.0.0.1:8000`).
+
+```bash
+triage serve                                  # in one terminal
+triage ui                                     # in another → http://127.0.0.1:8501
+# options: --api-url --host --port
+```
 
 ## Run it with Docker
 
@@ -153,12 +172,18 @@ export ANTHROPIC_API_KEY=sk-ant-...   # PowerShell: $env:ANTHROPIC_API_KEY="..."
 #    volume and embeds the corpus — a few minutes)
 docker compose run --rm api ingest
 
-# 2. Serve the API
+# 2. Serve the API and the UI
 docker compose up
 ```
 
 `GET /health` and `POST /triage` then answer on `http://127.0.0.1:8000`, exactly
-as with `triage serve` — the container runs the same CLI.
+as with `triage serve` — the container runs the same CLI. The **UI** comes up
+alongside it on `http://127.0.0.1:8501`: a second container from the *same
+image*, running `triage ui` against the API by its compose service name
+(`http://api:8000`). It starts only once the API is healthy
+(`depends_on: condition: service_healthy`), so it never races a still-loading
+model. Open the UI in a browser, type an alert, and read the grounded verdict
+with its citation panels.
 
 Notes:
 
@@ -217,7 +242,7 @@ _Demo screenshot coming soon._
 pyproject.toml        packaging: metadata, pinned deps, `triage` entry point
 Dockerfile            multi-stage image build (wheel -> slim runtime, model baked in)
 .dockerignore         what never enters the build context
-docker-compose.yml    API service + Chroma volume + /health healthcheck
+docker-compose.yml    API + UI services (one image, two commands) + Chroma volume
 .github/workflows/
   ci.yml              ruff + mypy + pytest on every push/PR
   release.yml         on a v* tag: wheel -> GitHub Release, image -> GHCR
@@ -233,6 +258,8 @@ triage/               core package
   fingerprint.py      store staleness fingerprint (written at ingest, checked at load)
   api.py              FastAPI app: POST /triage, GET /health
   serve.py            `triage serve` (uvicorn runner)
+  ui.py               Streamlit UI (thin HTTP client of the API)
+  ui_launch.py        `triage ui` (lazy-imports streamlit, launches ui.py)
   schema.py           Pydantic output contract for the verdict
   corpus/runbooks/    hand-written runbooks (markdown, ship in the wheel)
 corpus/

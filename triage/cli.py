@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import ingest, query, serve
+from . import ingest, query, serve, ui_launch
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -59,6 +59,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     serve.add_arguments(serve_parser)
     serve_parser.set_defaults(func=serve.run)
+
+    ui_parser = subparsers.add_parser(
+        "ui",
+        help="Launch the Streamlit UI, a thin browser client of the API.",
+        description=ui_launch.__doc__.splitlines()[0],
+    )
+    ui_launch.add_arguments(ui_parser)
+    ui_parser.set_defaults(func=ui_launch.run)
 
     args = parser.parse_args(argv)
     args.func(args)

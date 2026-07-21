@@ -25,7 +25,7 @@ name = "alert-triage-rag"
 # bumping it makes existing stores stale, forcing one `triage ingest` per
 # release — a deliberate author decision (Phase 9), because a version bump is
 # the only signal that chunking LOGIC (not just its constants) may have changed.
-version = "0.3.0"
+version = "0.4.0"
 description = "Retrieval-augmented triage assistant for SOC/MDR alerts: MITRE ATT&CK + runbook grounded verdicts with citations."
 readme = "README.md"
 # The oldest Python this code supports. pip refuses to install onto anything
@@ -72,6 +72,18 @@ dependencies = [
 # defines every environment this project has, with the same pinning
 # convention: pins are tested starting points, bump deliberately.
 [project.optional-dependencies]
+# The Streamlit UI (Phase 11). An EXTRA, not a runtime dep — the mirror image
+# of the fastapi/uvicorn call above, and the contrast is deliberate: `triage
+# serve` is a CORE verb (the integration surface), so hiding it behind an extra
+# would break every install; the UI is an OPTIONAL client, and streamlit is far
+# heavier (it drags in pandas, pyarrow, altair, tornado — tens of MB of
+# compiled wheels). CLI, API-only, and headless SIEM installs never pay for it;
+# `pip install "alert-triage-rag[ui]"` (and the Docker image build) opt in. The
+# `triage ui` verb imports streamlit lazily, so a plain install without this
+# extra still runs — it just tells you to install [ui] if you ask for the UI.
+ui = [
+    "streamlit==1.60.0",
+]
 dev = [
     # Test runner: discovers tests/, runs them, reports failures with
     # introspected assert output (no assertEqual boilerplate needed).
@@ -168,8 +180,10 @@ warn_unused_ignores = true
 # otherwise error on every `import sentence_transformers`. This narrows the
 # concession to exactly these modules — their objects are typed as Any —
 # instead of the blunt global ignore_missing_imports, which would also
-# silence typos in OUR import statements.
-module = ["sentence_transformers.*", "transformers.*"]
+# silence typos in OUR import statements. streamlit is here for the same
+# reason AND so mypy passes whether or not the optional [ui] extra is
+# installed (a plain [dev] checkout has no streamlit).
+module = ["sentence_transformers.*", "transformers.*", "streamlit.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

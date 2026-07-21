@@ -112,9 +112,10 @@ def test_triage_returns_a_grounded_verdict_over_http(
         )
 
     assert response.status_code == 200
-    # The response body must BE the schema.py contract — parseable back into
-    # TriageVerdict with its citations intact, not a wrapper around it.
-    returned = TriageVerdict.model_validate(response.json())
+    body_json = response.json()
+    # The response is the envelope: the verdict (still exactly the schema.py
+    # contract, parseable back into TriageVerdict) plus the retrieved sources.
+    returned = TriageVerdict.model_validate(body_json["verdict"])
     assert returned == verdict
     assert returned.citations[0].chunk_id == "T1110"
     # The model was grounded on the ORIGINAL alert text from the request body.
@@ -124,6 +125,15 @@ def test_triage_returns_a_grounded_verdict_over_http(
     # offered as citable sources.
     assert '<source id="T1110"' in prompt
     assert '<source id="rb-brute-force.md"' in prompt
+    # And that same retrieval provenance is now exposed to the client (the UI
+    # citation panel): both documents, correctly typed, neither backfilled,
+    # each carrying its full grounding text.
+    retrieved = {src["id"]: src for src in body_json["retrieved"]}
+    assert set(retrieved) == {"T1110", "rb-brute-force.md"}
+    assert retrieved["T1110"]["source_type"] == SourceType.ATTACK.value
+    assert retrieved["rb-brute-force.md"]["source_type"] == SourceType.RUNBOOK.value
+    assert all(not src["backfilled"] for src in retrieved.values())
+    assert "Adversaries may guess passwords." in retrieved["T1110"]["text"]
 
 
 # --- input validation -> 422 ----------------------------------------------------

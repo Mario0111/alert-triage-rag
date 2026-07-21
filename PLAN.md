@@ -189,14 +189,71 @@ Verified on the dev machine (real, not simulated):
   "app_version: store has '0.3.0', code has '0.4.0' ... Re-run `triage
   ingest`" and exited 3. pyproject was restored to 0.3.0 immediately
   (git diff clean).
-NOT yet exercised: release.yml has never run — no tag has been pushed. It is
-correct-on-push (YAML parse-validated) and its first real run happens when
-v0.3.0 is tagged. Author's call, since tagging publishes to GHCR.
+Release pipeline exercised end-to-end (tag v0.3.0 pushed on 2026-07-21):
+- Release workflow run 29873708394 succeeded (3m36s) on ref v0.3.0 — its
+  first real execution. The tag==pyproject guard passed at 0.3.0.
+- GHCR image ghcr.io/mario0111/alert-triage-rag:0.3.0 published and is
+  PUBLIC (verified by an anonymous, logged-out `docker manifest inspect` —
+  the README's `docker pull` works for strangers).
+- GitHub Release v0.3.0 created with the wheel + sdist attached.
+- Published wheel verified installable: downloaded from the Release into a
+  fresh throwaway venv (no source tree), `triage` entry point resolves with
+  ingest/query/serve, and both the wheel METADATA and fingerprint
+  app_version() report 0.3.0 — they agree, which is what keeps the store
+  fingerprint honest. (A transient 0.2.0 reading during the check was a
+  measurement artifact: the repo's gitignored stale alert_triage_rag.egg-info
+  shadowed the venv metadata when cwd was the repo root. Not shipped.)
 
-### Phase 11 — Streamlit UI  [ ]
+### Phase 11 — Streamlit UI  [x]
 Claude-owned. Thin client of the API: alert text box, rendered verdict,
 expandable citation panels showing retrieved chunks (incl. backfilled
 runbook marking). Done when: demoable in a screen-share.
+Delivered:
+- Retrieval envelope FIRST (the design gate): the verdict alone can't carry
+  the retrieved-chunk detail or the backfill marking the panels need, and
+  schema.py is paired — so instead of touching it, `POST /triage` now returns
+  a `TriageResponse` ENVELOPE {verdict: TriageVerdict (unchanged), retrieved:
+  [RetrievedSource...]}. query.triage_alert returns a `TriageResult`
+  (verdict + chunks); the CLI still prints only the verdict. schema.py
+  untouched (author decision A2 — see log). 65 -> 69 hermetic tests.
+- triage/ui.py: Streamlit app, a strict thin client (imports NO pipeline;
+  one stdlib-urllib POST to /triage). Renders verdict (disposition/severity/
+  confidence metrics, summary, techniques, actions) + one st.expander per
+  retrieved source marking cited/uncited and backfilled, with the model's
+  quote and the full source text. Last response parked in st.session_state so
+  opening a panel (a rerun) doesn't wipe the verdict.
+- triage/ui_launch.py + `triage ui` verb (cli.py): lazy streamlit import
+  (find_spec) so plain `triage --help` never imports it and a non-[ui]
+  install gets "install alert-triage-rag[ui]" not a traceback; launches via
+  `python -m streamlit run` (Smart App Control blocks the .exe shim).
+  --api-url > TRIAGE_API_URL env > http://127.0.0.1:8000.
+- streamlit is the [ui] EXTRA, not a runtime dep (mirror of the Phase 9
+  fastapi call, opposite answer — see log). Dockerfile installs [ui] too so
+  one image runs both `serve` and `ui`; docker-compose.yml's UI slot filled
+  (same image, command ["ui", ...], depends_on api condition: service_healthy,
+  127.0.0.1:8501:8501). CI installs [dev,ui] so test_ui runs there;
+  test_ui.py importorskips streamlit for plain-[dev] contributors.
+- Version bumped 0.3.0 -> 0.4.0 (stales the store by design).
+Verified on the dev machine (real, not simulated):
+- ruff / mypy / 69 pytest green from a TRIAGE_DATA_DIR-less shell.
+- `docker compose up` against the old 0.3.0 volume REFUSED loudly
+  ("app_version: store has '0.3.0', code has '0.4.0' ... Re-run `triage
+  ingest`", exit 3) — the fingerprint catching the bump. `docker compose run
+  --rm api ingest` rebuilt it (1607 technique + 10 runbook = 1617 chunks,
+  baked model, offline).
+- `docker compose up -d`: api -> healthy, THEN ui started (service_healthy
+  gate). API /health ok; UI served 200.
+- Real browser (in-app): submitted an SSH brute-force-to-C2 alert through the
+  UI; got true_positive/High/85% citing 07_brute_force_spray.md (naturally
+  matched, not backfilled), T1110.001, T1021.004, T1133 — the panels showed
+  the FULL ATT&CK detection text from the containerized store (proving the
+  UI reads the container API, not a local pipeline), with one source
+  (T1110.004) marked "not cited".
+- Failure path shown live: stopping the api container and re-submitting
+  rendered the UI's "Could not reach the API at http://api:8000 ..." error,
+  no traceback. The 502 upstream-failure path is unit-tested (a live 502
+  needs a forced model failure) alongside the api.py 422/502 mapping.
+- Stack torn down with `docker compose down` (volume preserved).
 
 ### Phase 12 — SIEM homelab  [ ]
 Paired — the normalizer shapes retrieval input. Wazuh manager VM +
@@ -421,6 +478,16 @@ produces a grounded verdict end-to-end without a human typing anything.
     `permissions: packages: write` declared), and the package page hangs off
     the same repo. Plain `docker` + `gh` CLI steps, no third-party actions,
     so there is no extra supply-chain dependency to justify.
+  - First release cut: v0.3.0 tagged on the Phase 10 commit (c298dcd) and
+    pushed 2026-07-21, publishing the public GHCR image and the wheel-bearing
+    GitHub Release. Confirms the tag-triggered model in practice: a tag is a
+    named pointer to a commit, `git push` does NOT carry tags (they need
+    `git push origin <tag>`), and only a tags/v* push starts release.yml —
+    branch pushes only run CI. Consequence worth stating for interviews:
+    versions are decoupled from commits — most commits ship nothing; a
+    release is the deliberate act of bumping pyproject and tagging that
+    commit. The guard enforces tag==pyproject.version, so "cut a release" is
+    always bump-commit-then-tag, never tag-an-arbitrary-tree.
   - Build hardening added after two real failures on a flaky link: pip's
     default 5 retries exhausted -> a truncated wheel failed its hash check
     (pip working correctly), then a mid-stream read timeout. Fix:
@@ -431,6 +498,54 @@ produces a grounded verdict end-to-end without a human typing anything.
     Diagnosis worth keeping: host measured 10.9 MB/s while the container
     saw 157 kB/s at one point, but a later container test hit 7.2 MB/s with
     matching 1500 MTUs — transient ISP/wifi trouble, not Docker networking.
+- Phase 11 UI decisions:
+  - Citation panel data (the design gate): the verdict's citations are only
+    what the MODEL chose to cite (id, type, ref, short quote) — NOT the full
+    retrieved text, the non-cited sources, or the `backfilled` marking (which
+    lives on RetrievedChunk in retrieval and was never returned over HTTP). So
+    PLAN's "panels showing retrieved chunks incl. backfilled marking" was not
+    renderable from the response. Weighed three options with the author (A1
+    verdict-only panel / A2 retrieval envelope / A3 extend schema.py); chose
+    A2. `POST /triage` returns TriageResponse {verdict, retrieved} and
+    triage_alert returns TriageResult(verdict, chunks). Rationale: it delivers
+    the full ask, keeps schema.py (the paired output contract) untouched, and
+    retrieval provenance is exactly what a single integration surface should
+    expose to EVERY client (the SIEM phase wants it too). Cost accepted: the
+    Phase 9 "the response IS TriageVerdict" line becomes "the response WRAPS
+    it", and triage_alert's return type changed (query.py plumbing, not the
+    grounding prompt).
+  - streamlit as the [ui] EXTRA, not a runtime dep — deliberately the OPPOSITE
+    of the Phase 9 fastapi/uvicorn call, and the contrast is the interview
+    point. Phase 9: an extra would break a CORE verb (`triage serve`, the
+    integration surface) for every install to save ~15 MB of pure-Python
+    wheels -> runtime dep. Phase 11: the UI is an OPTIONAL client and streamlit
+    is far heavier (pandas/pyarrow/altair/tornado, tens of MB compiled) ->
+    extra. Same decision framework, opposite answer because the two inputs
+    (core-vs-optional, light-vs-heavy) both flipped. Consequence handled: the
+    `triage ui` verb lazy-imports streamlit (find_spec) so a plain install
+    still runs `triage --help`, and the Dockerfile installs [ui] because one
+    image serves both verbs.
+  - `triage ui` subcommand over a bare `streamlit run` script: consistent with
+    ingest/query/serve, listed in `triage --help`, and it's what the compose
+    slot already assumed (command ["ui", ...] under ENTRYPOINT ["triage"]).
+    Streamlit is a RUNNER (it re-executes its target script top-to-bottom per
+    interaction), so ui.py is a pure script the CLI never imports, launched by
+    ui_launch.py via `python -m streamlit run` — module form, because Smart App
+    Control blocks the streamlit.exe console shim.
+  - One image, two commands (not a second UI image): compose builds the shared
+    image once (same build:/image: on both services) and runs `serve` and `ui`
+    from it. The UI reaches the API by compose SERVICE NAME (http://api:8000)
+    and waits on depends_on: condition: service_healthy — the api healthcheck
+    added in Phase 10 — so it can't start against a still-loading model.
+  - API URL precedence mirrors the data-dir pattern: --api-url flag >
+    TRIAGE_API_URL env > http://127.0.0.1:8000. Same flag/env/default shape the
+    rest of the app uses, so compose passes the flag and a local `triage serve`
+    needs nothing.
+  - UI's HTTP call uses stdlib urllib, no requests/httpx runtime dep — same
+    minimal-deps choice as the compose healthcheck. Keeps the [ui] extra to
+    just streamlit.
+  - The three parked lint/type proposals (retrieve.py B905, schema.py UP042,
+    the retrieve/chunk mypy disables) stay parked — untouched this phase.
 - SIEM: Wazuh. Free, single-VM friendly, ships rule->ATT&CK technique
   mappings (dovetails with the corpus), and its integratord hook makes
   "call a script with the alert JSON" a first-class feature.

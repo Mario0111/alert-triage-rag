@@ -16,7 +16,7 @@ services:
     # tag the result with (and, once releases are published, the name to pull
     # instead — `docker compose pull` would fetch ghcr.io/OWNER/... here).
     build: .
-    image: alert-triage-rag:0.3.0
+    image: alert-triage-rag:0.4.0
 
     # HOST:CONTAINER port mapping, host side pinned to 127.0.0.1.
     # The container binds 0.0.0.0 internally because it must (its own network
@@ -75,24 +75,43 @@ services:
     # it should stop, once, with "Re-run `triage ingest`" on screen.
     restart: "no"
 
-  # --- Phase 11 slot: Streamlit UI -----------------------------------------
-  # Intentionally NOT scaffolded. The UI is a thin client of this API and does
-  # not exist yet; a service that 404s in a demo is worse than an honest gap.
-  # When it lands it will be roughly:
-  #
-  #   ui:
-  #     build: .
-  #     command: ["ui", "--api-url", "http://api:8000"]
-  #     ports: ["127.0.0.1:8501:8501"]
-  #     depends_on:
-  #       api:
-  #         condition: service_healthy
-  #
-  # Two things that already work in its favour: compose puts every service on
-  # one user-defined network where containers resolve each other BY SERVICE
-  # NAME (hence http://api:8000 — no IPs, no host ports involved), and the
-  # healthcheck above is exactly what `condition: service_healthy` waits for,
-  # so the UI cannot start against an API that is still loading its model.
+  # --- Streamlit UI (Phase 11) ---------------------------------------------
+  # A thin browser client of the API. SAME image as `api`, different command
+  # (decision: one image, two verbs) — declaring the same `build:`/`image:`
+  # here makes compose build the image once and both services share it.
+  ui:
+    build: .
+    image: alert-triage-rag:0.4.0
+
+    # `triage ui`:
+    #  --api-url points the UI at the api container BY ITS COMPOSE SERVICE NAME.
+    #    Compose puts every service on one user-defined network where containers
+    #    resolve each other by name, so "http://api:8000" needs no IPs and does
+    #    not go through any host port.
+    #  --host 0.0.0.0 is required INSIDE the container for the port mapping below
+    #    to reach Streamlit (same own-network-namespace reason as the API's
+    #    `serve --host 0.0.0.0`); it is not a loosening — the host side is pinned
+    #    to 127.0.0.1 just like the API.
+    command: ["ui", "--api-url", "http://api:8000", "--host", "0.0.0.0"]
+
+    # Streamlit's default port, host side pinned to loopback (see the api port
+    # note above for why 127.0.0.1 matters).
+    ports:
+      - "127.0.0.1:8501:8501"
+
+    # Do not start the UI until the API is genuinely READY. `service_healthy`
+    # waits for the api healthcheck to pass — which means its lifespan finished:
+    # the embedding model loaded AND the staleness fingerprint checked out. A
+    # plain `depends_on: [api]` would only wait for the api container to START,
+    # and the UI's first request would race a still-loading API (or hit a store
+    # that is about to refuse startup).
+    depends_on:
+      api:
+        condition: service_healthy
+
+    # Same reasoning as the api service: no restart policy, so a failure stops
+    # once and visibly rather than looping.
+    restart: "no"
 
 volumes:
   # Declaring the volume here is what makes it a managed named volume with a
