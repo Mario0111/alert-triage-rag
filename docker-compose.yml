@@ -1,0 +1,103 @@
+# docker-compose.yml — how this image is RUN, checked into git.
+#
+# Compose is not a different runtime; it is a front-end that makes the same
+# engine API calls `docker run` would. Its value is that the entire
+# invocation — port mapping, volume, environment, healthcheck — stops living
+# in your shell history and becomes versioned configuration next to the code.
+# The equivalent raw command is long, and every flag in it is load-bearing.
+#
+# The two commands this file supports (see README):
+#   docker compose run --rm api ingest   # one-off: build/rebuild the store
+#   docker compose up                    # serve the API
+
+services:
+  api:
+    # `build` = build from this directory's Dockerfile; `image` = the name to
+    # tag the result with (and, once releases are published, the name to pull
+    # instead — `docker compose pull` would fetch ghcr.io/OWNER/... here).
+    build: .
+    image: alert-triage-rag:0.3.0
+
+    # HOST:CONTAINER port mapping, host side pinned to 127.0.0.1.
+    # The container binds 0.0.0.0 internally because it must (its own network
+    # namespace), so this line is what preserves serve.py's closed-by-default
+    # posture: the service fronts a paid API and has no auth of its own.
+    # Writing "8000:8000" instead would expose it to your whole LAN.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    # Name-only form: compose forwards ANTHROPIC_API_KEY from the shell that
+    # runs it, so the key exists only in the environment — never in this file,
+    # never in the image, never in git. Setting `KEY=value` here would commit
+    # the secret; baking it into the Dockerfile would ship it to GHCR.
+    environment:
+      - ANTHROPIC_API_KEY
+
+    # NAMED VOLUME (not a bind mount). Containers are disposable; the Chroma
+    # store and the downloaded ATT&CK bundle are not. A named volume is
+    # engine-managed storage that outlives any container, so upgrading the
+    # image keeps the data. TRIAGE_DATA_DIR=/data is set in the image, so
+    # triage/paths.py resolves everything here with no code change.
+    #
+    # A bind mount (C:\...\chroma_db:/data) would be the alternative and is
+    # deliberately NOT used: on Docker Desktop it crosses the Windows<->WSL
+    # filesystem boundary, which is slow and permission-quirky — poor hosting
+    # for a database. Named volumes live natively in the VM's Linux filesystem.
+    volumes:
+      - chroma-data:/data
+
+    # The engine runs this command INSIDE the container on a timer and marks
+    # the container healthy/unhealthy from its exit code. That is what lets
+    # `docker compose ps` report genuine readiness — the lifespan hook finished,
+    # meaning the model loaded AND the staleness fingerprint passed — rather
+    # than merely "the process started". It is also the signal the Phase 11 UI
+    # will wait on via depends_on/service_healthy.
+    #
+    # Probed with stdlib urllib, not curl: the slim image has no curl, and
+    # installing one just for a healthcheck would violate the minimal-deps rule.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # Grace period before failures count: startup loads the ~130 MB embedder
+      # and opens Chroma. Without it the container would be declared unhealthy
+      # while it is still legitimately booting.
+      start_period: 90s
+
+    # Deliberately NO restart policy. `restart: unless-stopped` would turn the
+    # Phase 9 fail-loudly startup (missing or stale store -> lifespan raises ->
+    # uvicorn exits) into an invisible crash loop. The refusal is the feature:
+    # it should stop, once, with "Re-run `triage ingest`" on screen.
+    restart: "no"
+
+  # --- Phase 11 slot: Streamlit UI -----------------------------------------
+  # Intentionally NOT scaffolded. The UI is a thin client of this API and does
+  # not exist yet; a service that 404s in a demo is worse than an honest gap.
+  # When it lands it will be roughly:
+  #
+  #   ui:
+  #     build: .
+  #     command: ["ui", "--api-url", "http://api:8000"]
+  #     ports: ["127.0.0.1:8501:8501"]
+  #     depends_on:
+  #       api:
+  #         condition: service_healthy
+  #
+  # Two things that already work in its favour: compose puts every service on
+  # one user-defined network where containers resolve each other BY SERVICE
+  # NAME (hence http://api:8000 — no IPs, no host ports involved), and the
+  # healthcheck above is exactly what `condition: service_healthy` waits for,
+  # so the UI cannot start against an API that is still loading its model.
+
+volumes:
+  # Declaring the volume here is what makes it a managed named volume with a
+  # stable name (alert_triage_rag_chroma-data) rather than an anonymous one
+  # that a `docker compose down -v` era container would orphan. It persists
+  # across `down`/`up` and image upgrades; `docker compose down -v` is the
+  # deliberate act that deletes the store.
+  chroma-data:

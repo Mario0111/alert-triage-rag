@@ -1,0 +1,59 @@
+# .dockerignore — what NEVER enters the Docker build context.
+#
+# `docker build .` first packs the whole directory and ships it to the engine
+# (on Docker Desktop the engine lives in a WSL VM, so this is a genuine copy
+# across a VM boundary, not a local path lookup). Only then can COPY pick
+# files out of it. Two things go wrong without this file:
+#
+#   1. Speed: .venv/ alone is hundreds of MB that would be copied on EVERY
+#      build, before a single instruction runs.
+#   2. Safety: the builder stage does `COPY . .`, so anything left in the
+#      context can end up inside an image that gets pushed publicly to GHCR.
+#      The dev vector store, the git history, and any local .env must not.
+#
+# Same syntax as .gitignore, but a SEPARATE concern: .gitignore answers "what
+# is source?", this answers "what does the image build need?". Tests are
+# tracked in git yet excluded here — the image doesn't run them.
+
+# --- Large local state (regenerable; belongs on a volume, not in an image) ---
+.venv/
+venv/
+chroma_db/
+corpus/
+build/
+dist/
+*.egg-info/
+
+# --- Secrets: the API key reaches the container via the environment only ---
+.env
+.env.*
+
+# --- Version control + CI metadata (not needed to build the app) ---
+.git/
+.github/
+.gitignore
+
+# --- Caches ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.huggingface/
+
+# --- Dev-only files ---
+tests/
+.claude/
+.vscode/
+.idea/
+*.md
+!README.md
+
+# README.md is un-ignored above because pyproject.toml declares
+# `readme = "README.md"`; the wheel build fails without it.
+
+# --- Docker's own files (changing them must not invalidate COPY layers) ---
+Dockerfile
+.dockerignore
+docker-compose.yml

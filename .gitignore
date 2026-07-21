@@ -1,4 +1,5 @@
 # --- Project-specific ---
+HOW_IT_WORKS.md
 # Persisted vector store (rebuild with ingest.py)
 chroma_db/
 

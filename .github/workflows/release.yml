@@ -1,0 +1,185 @@
+# Release: on a v* tag, publish the wheel to a GitHub Release and the image
+# to GHCR.
+#
+# Same machinery as ci.yml (a throwaway Ubuntu VM runs these steps), different
+# TRIGGER. ci.yml runs on every push and answers "is main healthy?". This runs
+# only when a tag matching v* is pushed, and answers "publish this commit".
+# That makes `git tag v0.3.0 && git push origin v0.3.0` the entire release
+# procedure: every artifact is built by a machine, from one commit, the same
+# way every time. Building locally instead would tie releases to whatever is
+# installed on the dev laptop — which on this project's Windows machine is
+# demonstrably not representative (a pinned numpy, Smart App Control blocking
+# binaries). Nothing here is manual, so nothing here can be forgotten.
+#
+# Versioning policy (PLAN.md): app_version is an ENFORCED staleness-fingerprint
+# field, so every release bumps pyproject.toml's version and every upgrade
+# stales existing stores by design. The release notes below say so out loud.
+
+name: Release
+
+on:
+  push:
+    tags:
+      # Glob, not a regex: any tag starting with "v". The version-guard step
+      # below is what actually enforces the exact v<major>.<minor>.<patch>
+      # shape, by comparing against pyproject.toml.
+      - "v*"
+
+# The token every workflow run receives is minted fresh, expires when the run
+# ends, and starts read-only. Anything that WRITES must be requested here:
+#   contents: write  -> create the GitHub Release and upload the wheel to it
+#   packages: write  -> push the image to GHCR
+# Without these two lines both pushes fail with 403. Declaring them per-workflow
+# (rather than widening the repo default) keeps every other workflow — CI —
+# read-only. Note there is no secret to create or rotate: GITHUB_TOKEN is not a
+# personal access token, and it cannot be used outside this run.
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # fetch-depth: 0 pulls full history + tags. The default shallow clone is
+      # fine for CI but leaves `gh release create` without the tag context it
+      # annotates the release from.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Only ONE Python here, unlike CI's 3.11/3.14 matrix: this job does not
+      # test the code (CI already did, on the same commit), it packages it.
+      # The wheel is py3-none-any — pure Python, no compiled extensions — so
+      # the interpreter that builds it does not affect the artifact.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # --- Guard: the tag must match the packaged version -------------------
+      # This is not bureaucracy. app_version is baked into every store's
+      # staleness fingerprint, so an image labelled v0.3.0 that actually
+      # contains 0.4.0 code would not merely be mislabelled — it would refuse
+      # stores built by real 0.3.0 with a confusing mismatch error. Catch it
+      # here, before anything is published, when the fix is just retagging.
+      - name: Verify tag matches pyproject version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          echo "tag=$TAG  pyproject=$VERSION"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Tag $TAG does not match pyproject.toml version $VERSION (expected v$VERSION). Fix one of them and re-tag."
+            exit 1
+          fi
+          # Expose the bare version to later steps via the step-output file.
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        id: version
+
+      # --- Artifact 1: the wheel -------------------------------------------
+      # `build` is the PEP 517 front-end (same tool the Dockerfile's builder
+      # stage uses). It produces:
+      #   dist/*.whl     the installable wheel — what pipx/pip consume
+      #   dist/*.tar.gz  the sdist, a source snapshot for anyone who wants to
+      #                  build it themselves
+      - name: Build wheel + sdist
+        run: |
+          pip install build==1.3.0
+          python -m build
+
+      # --- Artifact 2: the image -------------------------------------------
+      # GHCR (ghcr.io) is GitHub's container registry: PyPI, but for images.
+      # Publishing there means a user can run the API with a single
+      # `docker pull` and no clone, no Python, no torch install.
+      #
+      # Login uses the run's own GITHUB_TOKEN via stdin — never as a command
+      # argument, which would put it in the process list and the run log.
+      # No third-party action is involved: docker is preinstalled on the
+      # runner, so this is one less supply-chain dependency to justify.
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Image references must be lowercase; GitHub usernames may not be, so a
+      # mixed-case owner would make `docker push` fail on an otherwise valid
+      # tag. Normalising here keeps that from being a release-day surprise.
+      - name: Compute image name
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/alert-triage-rag" >> "$GITHUB_OUTPUT"
+
+      # Two tags on ONE build (-t twice tags the same image, it does not build
+      # twice):
+      #   :0.3.0   immutable, the whole point of a release — it always means
+      #            this exact commit
+      #   :latest  a moving convenience pointer for demos
+      # Anything reproducible should pin the version tag; :latest is a
+      # convenience, not a contract.
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.image.outputs.name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:latest"
+
+      # --- The Release page -------------------------------------------------
+      # `gh` (the GitHub CLI) is preinstalled on runners; it needs GH_TOKEN in
+      # the environment. Passing dist/* attaches the wheel and sdist as
+      # downloadable release assets.
+      #
+      # The notes deliberately lead with the staleness consequence. Upgrading
+      # bumps app_version, which is an enforced fingerprint field, so EVERY
+      # existing store goes stale and the API will refuse to start until one
+      # `triage ingest` rebuilds it. That is a deliberate design decision, not
+      # a bug — but a user who meets it without warning will read it as one.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="${{ steps.image.outputs.name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "v${VERSION}" \
+            --notes "$(cat <<EOF
+          ## alert-triage-rag v${VERSION}
+
+          RAG triage for SOC alerts: retrieves MITRE ATT&CK techniques and internal
+          runbooks, returns a grounded verdict with citations.
+
+          ### ⚠️ Upgrading stales your existing store
+
+          The app version participates in the vector store's staleness fingerprint,
+          so **this release makes any existing store stale**. The CLI and the API
+          will refuse to run against it, with a message naming the mismatch. One
+          rebuild fixes it:
+
+          \`\`\`
+          triage ingest
+          \`\`\`
+
+          This is deliberate: a version bump is the only reliable signal that
+          chunking *logic* — not just its constants — may have changed, and serving
+          verdicts from an index the current code no longer matches would silently
+          degrade exactly the citations this project exists to guarantee.
+
+          ### Install
+
+          CLI (needs Python 3.11+):
+
+          \`\`\`
+          pipx install https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/alert_triage_rag-${VERSION}-py3-none-any.whl
+          triage ingest
+          triage query "your alert text"
+          \`\`\`
+
+          API as a container (no Python needed; embedding model baked in):
+
+          \`\`\`
+          docker pull ${IMAGE}:${VERSION}
+          docker run --rm -v chroma-data:/data -e ANTHROPIC_API_KEY ${IMAGE}:${VERSION} ingest
+          docker run --rm -p 127.0.0.1:8000:8000 -v chroma-data:/data -e ANTHROPIC_API_KEY ${IMAGE}:${VERSION}
+          \`\`\`
+
+          The Anthropic API key is read from the environment only — it is never
+          baked into the image or stored in compose files.
+          EOF
+          )"

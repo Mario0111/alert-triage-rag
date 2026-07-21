@@ -151,12 +151,47 @@ end-to-end over HTTP (re-ingested dev store -> uvicorn -> verdict with
 citations via Invoke-RestMethod); old pre-fingerprint store and an empty
 data dir both refused at startup with the ingest remedy.
 
-### Phase 10 — Docker + releases  [ ]
+### Phase 10 — Docker + releases  [x]
 Claude-owned, teaching mode. Multi-stage Dockerfile (torch layer cached),
-docker-compose (API + UI + Chroma volume), embedding model baked/cached
+docker-compose (API + Chroma volume), embedding model baked/cached
 so cold start is sane, API key via env only. Tagged releases: wheel +
-image to GHCR via Actions. Done when: `docker compose up` on a clean
-machine serves the API + UI.
+image to GHCR via Actions. Done-when amended: the UI moved to Phase 11, so
+the bar here is `docker compose up` serving the API — the compose file
+carries a commented UI slot instead of a dead service.
+Delivered:
+- Dockerfile: two stages (builder runs `python -m build`; runtime installs
+  only the resulting wheel, so no build tooling ships). Layers ordered
+  torch -> pinned deps -> baked model -> our wheel, so a code edit rebuilds
+  only the last. Non-root uid 1000, TRIAGE_DATA_DIR=/data, HF_HUB_OFFLINE=1
+  after the bake, ENTRYPOINT ["triage"] + CMD ["serve", ...].
+- .dockerignore (.venv/chroma_db/corpus/.git/.env out of the context) and
+  docker-compose.yml (named volume, 127.0.0.1:8000:8000, key by name only,
+  /health healthcheck via stdlib urllib, restart:"no").
+- .github/workflows/release.yml: on a v* tag, guard tag==pyproject version,
+  build wheel+sdist, push image to GHCR, create the Release with notes that
+  lead on "upgrading stales your store; run `triage ingest`".
+Verified on the dev machine (real, not simulated):
+- ruff / mypy / 65 pytest green from a TRIAGE_DATA_DIR-less shell.
+- `docker build` succeeds; measured image 2.57 GB (~1.4 GB CPU torch,
+  788 MB deps, 136 MB baked model). Cached rebuild with no source change:
+  0.8 s — the layer ordering doing its job.
+- `docker compose up` on an EMPTY volume refuses loudly:
+  "Chroma database not found at /data/chroma_db. Run `triage ingest` first."
+  and exits 3 (no zombie service; restart:"no" prevents a crash loop).
+- `docker compose run --rm api ingest` on the volume: real ATT&CK download +
+  local embedding, 1607 technique + 10 runbook = 1617 chunks. The baked
+  model loaded with HF_HUB_OFFLINE=1, proving zero network dependency.
+- `docker compose up -d` -> healthy in 5 s; GET /health {"status":"ok"};
+  POST /triage returned a true_positive/high verdict citing two runbooks
+  and T1059.001 with quotes.
+- Upgrade staleness shown end-to-end: a throwaway 0.4.0 image run against
+  the 0.3.0-built volume refused with
+  "app_version: store has '0.3.0', code has '0.4.0' ... Re-run `triage
+  ingest`" and exited 3. pyproject was restored to 0.3.0 immediately
+  (git diff clean).
+NOT yet exercised: release.yml has never run — no tag has been pushed. It is
+correct-on-push (YAML parse-validated) and its first real run happens when
+v0.3.0 is tagged. Author's call, since tagging publishes to GHCR.
 
 ### Phase 11 — Streamlit UI  [ ]
 Claude-owned. Thin client of the API: alert text box, rendered verdict,
@@ -337,6 +372,65 @@ produces a grounded verdict end-to-end without a human typing anything.
     the ANONYMIZED_TELEMETRY env var (autouse fixture) instead of
     passing Settings(anonymized_telemetry=False), so production code's
     default-settings open of the same path stays compatible.
+- Phase 10 Docker/release decisions:
+  - Multi-stage over single-stage: the builder stage produces the wheel and
+    is discarded, so pip/setuptools/build never ship. Bonus consistency —
+    the image installs the SAME artifact the release workflow publishes,
+    so there is one build story rather than "the wheel" and "the image".
+  - Layer order IS the design: torch (never changes) -> deps (changes with
+    pyproject.toml) -> baked model -> our wheel (changes constantly). Deps
+    are installed from a requirements list extracted from pyproject.toml
+    with stdlib tomllib, NOT by `pip install .`, because installing the
+    package would need the source and would tie the dependency layer's
+    cache key to every code edit. This also answers the requirements.txt
+    question parked in Phase 7: the generated list lives inside the build,
+    so pyproject.toml stays the single source of truth.
+  - BAKE the embedding model, don't cache it on a volume. Measured: 136 MB
+    of a 2.57 GB image (~5%). Buys a cold start with zero network
+    dependency and makes the image self-contained evidence of which model
+    it embeds with — and embed_model is an enforced fingerprint field, so
+    that must never be ambiguous. A download-on-first-run cache volume
+    would have reintroduced exactly the kind of invisible moving part the
+    fingerprint work exists to eliminate.
+  - Ingest is an explicit one-off (`docker compose run --rm api ingest`),
+    NOT entrypoint auto-ingest. Auto-ingest would bury a multi-minute,
+    network-touching corpus rebuild inside "starting the service" and would
+    MUTE the fingerprint: the loud refusal designed in Phase 9 would become
+    a silent self-heal on every version bump. Consistent with the Phase 9
+    choice of fail-loudly over a 503-zombie. `restart: "no"` is part of the
+    same decision — a restart policy would turn that one loud refusal into
+    an invisible crash loop.
+  - Named volume, not a bind mount, for /data. Bind-mounting a Windows path
+    on Docker Desktop crosses the Windows<->WSL filesystem boundary (slow,
+    permission-quirky) — poor hosting for a database. Named volumes live in
+    the VM's Linux filesystem. TRIAGE_DATA_DIR=/data means the Phase 7 env
+    override is the ONLY wiring needed: no container-specific code path.
+  - Container binds 0.0.0.0 (each container has its own network namespace,
+    so 127.0.0.1 inside would be unreachable); the closed-by-default posture
+    moves to the compose port mapping "127.0.0.1:8000:8000". Not a
+    loosening of serve.py's default — the same guarantee, one layer out.
+  - No Streamlit service scaffolded: a service that 404s in a demo is worse
+    than an honest commented slot. It lands in Phase 11 with
+    depends_on/service_healthy against the healthcheck added here.
+  - Release trigger is a v* tag with a guard that the tag equals
+    pyproject.toml's version. Not bureaucracy: app_version is an enforced
+    fingerprint field, so an image labelled v0.3.0 containing 0.4.0 code
+    would refuse stores built by real 0.3.0 with a baffling error.
+  - GHCR over Docker Hub: auth inside Actions is the run's own GITHUB_TOKEN
+    (short-lived, no secret to create or rotate — it just needs
+    `permissions: packages: write` declared), and the package page hangs off
+    the same repo. Plain `docker` + `gh` CLI steps, no third-party actions,
+    so there is no extra supply-chain dependency to justify.
+  - Build hardening added after two real failures on a flaky link: pip's
+    default 5 retries exhausted -> a truncated wheel failed its hash check
+    (pip working correctly), then a mid-stream read timeout. Fix:
+    PIP_RETRIES=10 / PIP_DEFAULT_TIMEOUT=120 plus BuildKit
+    `--mount=type=cache` on the pip installs — a build-time cache that
+    persists across builds but is NOT part of any layer, so a failed build
+    no longer re-downloads 176 MB and the image gains nothing in size.
+    Diagnosis worth keeping: host measured 10.9 MB/s while the container
+    saw 157 kB/s at one point, but a later container test hit 7.2 MB/s with
+    matching 1500 MTUs — transient ISP/wifi trouble, not Docker networking.
 - SIEM: Wazuh. Free, single-VM friendly, ships rule->ATT&CK technique
   mappings (dovetails with the corpus), and its integratord hook makes
   "call a script with the alert JSON" a first-class feature.
@@ -365,6 +459,13 @@ produces a grounded verdict end-to-end without a human typing anything.
   integratord script) so the triage API isn't called thousands of times a
   day. Which threshold?
 - Publish to PyPI, or keep install as `pipx install` from the GitHub repo?
+  STILL PARKED after Phase 10, now with a reason to stay parked: GHCR covers
+  "run it anywhere" and `pipx install git+https://github.com/...` (or the
+  wheel attached to each Release) covers "install the CLI", which is the
+  whole demo story. PyPI would add an account, a trusted-publisher or token
+  setup, and a permanent name claim for no interview value today. Revisit
+  only if someone outside the project actually needs `pip install
+  alert-triage-rag`.
 - Staleness detection: DONE at the start of Phase 9 (fingerprint.py) —
   see the Phase 9 decisions-log entry for the enforced fields and the
   custom---runbooks-dir exemption.

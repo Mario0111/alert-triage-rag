@@ -65,7 +65,7 @@ pip install --user pipx
 pipx ensurepath          # then open a new terminal
 
 # install the app (from a clone, or straight from GitHub)
-pipx install git+https://github.com/<you>/alert-triage-rag
+pipx install git+https://github.com/Mario0111/alert-triage-rag
 # or, from a local checkout:
 pipx install .
 ```
@@ -139,6 +139,42 @@ Responses: `200` with the verdict; `422` if the request body fails validation;
 `502` if the upstream model produced nothing the service can vouch for
 (API failure, refusal, or a verdict that failed grounding validation).
 
+## Run it with Docker
+
+The container is the zero-Python path: the image ships the pinned dependencies,
+CPU-only torch, and the `bge-small-en-v1.5` embedding model **baked in**, so a
+cold start needs no downloads at all. The Chroma store lives on a named volume,
+so it survives container and image upgrades.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...   # PowerShell: $env:ANTHROPIC_API_KEY="..."
+
+# 1. Build the store (one-off container; downloads the ATT&CK bundle into the
+#    volume and embeds the corpus — a few minutes)
+docker compose run --rm api ingest
+
+# 2. Serve the API
+docker compose up
+```
+
+`GET /health` and `POST /triage` then answer on `http://127.0.0.1:8000`, exactly
+as with `triage serve` — the container runs the same CLI.
+
+Notes:
+
+- **The API key is passed by environment only.** `docker-compose.yml` names the
+  variable but never holds a value, so the key is never in the image, the file,
+  or git.
+- **Ingest is a deliberate one-off, not automatic on startup.** After upgrading
+  to a new image version the API will *refuse to start*, naming the
+  fingerprint mismatch — the store was built by different code. Re-run step 1
+  and `docker compose up` again. That refusal is the staleness guard working as
+  designed, so the container does not auto-heal it silently.
+- The published image can be used directly instead of building:
+  `docker pull ghcr.io/mario0111/alert-triage-rag:latest`.
+- `docker compose down` stops the service and keeps the store;
+  `docker compose down -v` also deletes the volume (a full re-ingest afterwards).
+
 ## Data locations
 
 The app never assumes a repo checkout. Mutable data (the Chroma store, the
@@ -179,6 +215,12 @@ _Demo screenshot coming soon._
 
 ```
 pyproject.toml        packaging: metadata, pinned deps, `triage` entry point
+Dockerfile            multi-stage image build (wheel -> slim runtime, model baked in)
+.dockerignore         what never enters the build context
+docker-compose.yml    API service + Chroma volume + /health healthcheck
+.github/workflows/
+  ci.yml              ruff + mypy + pytest on every push/PR
+  release.yml         on a v* tag: wheel -> GitHub Release, image -> GHCR
 triage/               core package
   cli.py              the `triage` command (argparse subcommand dispatch)
   paths.py            data-directory resolution (platformdirs + overrides)
