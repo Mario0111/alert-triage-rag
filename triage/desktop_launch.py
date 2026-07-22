@@ -1,11 +1,9 @@
 """The ``triage desktop`` subcommand: launch the native Qt UI (a client of the API).
 
-Unlike the Streamlit UI (which needs a ``streamlit run`` server), a Qt app is an
-ordinary Python program, so this handler just imports it and calls ``main()`` —
-in-process, no subprocess.
+A Qt app is an ordinary Python program (no separate server process to launch),
+so this handler just imports it and calls ``main()`` — in-process, no subprocess.
 
-The PySide6 import is LAZY, for the same reasons as the streamlit one in
-ui_launch.py: PySide6 is a heavy OPTIONAL extra (``pip install
+The PySide6 import is LAZY: PySide6 is a heavy OPTIONAL extra (``pip install
 "alert-triage-rag[desktop]"``), never needed by the CLI, API, or SIEM. cli.py
 imports this module to register the verb, so a top-level ``import PySide6`` would
 make a plain ``triage --help`` pull in Qt and would crash every install that
@@ -30,6 +28,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "http://127.0.0.1:8000 (a local `triage serve`). It can also be "
         "changed live in the app's API-endpoint field.",
     )
+    parser.add_argument(
+        "--no-autostart",
+        action="store_true",
+        help="Do not start a backend automatically. By default the app brings "
+        "the API up if nothing is already answering (a local `triage serve` "
+        "from a source checkout, or the Docker container when packaged) and "
+        "shuts down only what it started.",
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -48,7 +54,7 @@ def run(args: argparse.Namespace) -> None:
 
     from . import desktop  # lazy: imports PySide6 only when the verb is used
 
-    raise SystemExit(desktop.main())
+    raise SystemExit(desktop.main(autostart=not args.no_autostart))
 
 
 def main(argv: list[str] | None = None) -> None:

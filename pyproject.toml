@@ -72,27 +72,26 @@ dependencies = [
 # defines every environment this project has, with the same pinning
 # convention: pins are tested starting points, bump deliberately.
 [project.optional-dependencies]
-# The Streamlit UI (Phase 11). An EXTRA, not a runtime dep — the mirror image
-# of the fastapi/uvicorn call above, and the contrast is deliberate: `triage
-# serve` is a CORE verb (the integration surface), so hiding it behind an extra
-# would break every install; the UI is an OPTIONAL client, and streamlit is far
-# heavier (it drags in pandas, pyarrow, altair, tornado — tens of MB of
-# compiled wheels). CLI, API-only, and headless SIEM installs never pay for it;
-# `pip install "alert-triage-rag[ui]"` (and the Docker image build) opt in. The
-# `triage ui` verb imports streamlit lazily, so a plain install without this
-# extra still runs — it just tells you to install [ui] if you ask for the UI.
-ui = [
-    "streamlit==1.60.0",
-]
-# The native desktop app (Qt via PySide6). Another OPTIONAL client extra, same
-# reasoning as [ui]: it's a thin client of the API, never needed by the CLI,
-# API, or SIEM, and PySide6 is very heavy (the Qt runtime, ~250 MB installed).
-# `triage desktop` lazy-imports it, so a plain install runs without it and only
-# asks for [desktop] if you request the app. Unlike [ui] it is NOT installed
-# into the Docker image — a GUI has no place in a headless container; the
-# desktop app runs on your machine against the containerized (or local) API.
+# The native desktop app (Qt via PySide6). An EXTRA, not a runtime dep — the
+# mirror image of the fastapi/uvicorn call above, and the contrast is
+# deliberate: `triage serve` is a CORE verb (the integration surface), so hiding
+# it behind an extra would break every install; the desktop app is an OPTIONAL
+# client, and PySide6 is very heavy (the Qt runtime, ~250 MB installed). CLI,
+# API-only, and headless SIEM installs never pay for it. `triage desktop`
+# lazy-imports it, so a plain install runs without this extra — it just tells
+# you to install [desktop] if you ask for the app. It is deliberately NOT
+# installed into the Docker image: a GUI has no place in a headless container,
+# and the app runs on your machine against the containerized (or local) API.
 desktop = [
     "PySide6==6.11.1",
+]
+# Tooling to BUILD the desktop app into a standalone .exe (see
+# packaging/alert-triage-desktop.spec). Build-time only — nothing here is
+# imported by the app at runtime, and neither the CLI, the API, the Docker
+# image, nor CI installs it. Kept separate from [dev] so test/lint installs
+# don't pull a packaging toolchain they never invoke.
+exe = [
+    "pyinstaller==6.21.0",
 ]
 dev = [
     # Test runner: discovers tests/, runs them, reports failures with
@@ -190,10 +189,10 @@ warn_unused_ignores = true
 # otherwise error on every `import sentence_transformers`. This narrows the
 # concession to exactly these modules — their objects are typed as Any —
 # instead of the blunt global ignore_missing_imports, which would also
-# silence typos in OUR import statements. streamlit is here for the same
-# reason AND so mypy passes whether or not the optional [ui] extra is
-# installed (a plain [dev] checkout has no streamlit).
-module = ["sentence_transformers.*", "transformers.*", "streamlit.*", "PySide6.*"]
+# silence typos in OUR import statements. PySide6 is here for the same reason
+# AND so mypy passes whether or not the optional [desktop] extra is installed
+# (a plain [dev] checkout has no PySide6).
+module = ["sentence_transformers.*", "transformers.*", "PySide6.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

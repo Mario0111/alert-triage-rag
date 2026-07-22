@@ -1,10 +1,11 @@
 """Native desktop app for triage — a Qt (PySide6) THIN CLIENT of the HTTP API.
 
-Like the Streamlit UI, this imports NO part of the pipeline (CLAUDE.md's
-single-integration-surface rule): it POSTs to ``/triage`` via `apiclient` and
-renders the JSON envelope. Unlike the Streamlit UI it is a real native-window
-application — its own window, native widgets, no browser — talking to a backend
-you run separately (`triage serve` or `docker compose up`).
+This imports NO part of the pipeline (CLAUDE.md's single-integration-surface
+rule): it POSTs to ``/triage`` via `apiclient` and renders the JSON envelope.
+It is a real native-window application — its own window, native widgets, no
+browser — talking to a backend you run separately (`triage serve` or
+`docker compose up`), which is why it stays small enough to ship as one
+executable while the pipeline it queries is gigabytes.
 
 Qt concepts this file leans on (teaching notes):
 
@@ -26,7 +27,7 @@ Qt concepts this file leans on (teaching notes):
 - **Widgets vs layouts.** Widgets (`QPushButton`, `QLineEdit`) are the controls;
   layouts (`QVBoxLayout`) arrange them and handle resizing. The citation panels
   are a small custom `_Collapsible` (a `QToolButton` toggling a content frame),
-  the native equivalent of the Streamlit expanders.
+  since Qt ships no collapsible container of its own.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import apiclient
+from . import apiclient, backend
 
 _VERDICT_LABELS = {
     "true_positive": "🔴 True positive",
@@ -96,12 +97,38 @@ class _TriageWorker(QThread):
             self.succeeded.emit(envelope)
 
 
+class _BackendWorker(QThread):
+    """Bring the API up (if needed) off the GUI thread.
+
+    Starting a container or a server takes tens of seconds; doing it on the GUI
+    thread would mean the window never paints until it finished, which looks
+    exactly like a hang. Progress arrives as ``status`` signals so the user can
+    watch it happen.
+    """
+
+    status = Signal(str)
+    ready = Signal(object)  # BackendHandle | None
+    failed = Signal(str)
+
+    def __init__(self, api_url: str) -> None:
+        super().__init__()
+        self._api_url = api_url
+
+    def run(self) -> None:
+        try:
+            handle = backend.ensure_backend(self._api_url, self.status.emit)
+        except Exception as exc:  # surfaced in the window, never swallowed
+            self.failed.emit(str(exc))
+        else:
+            self.ready.emit(handle)
+
+
 class _Collapsible(QWidget):
     """A section with a clickable header that shows/hides its content.
 
     Qt ships no collapsible box, so this is the small standard pattern: a
     checkable ``QToolButton`` whose toggle flips an arrow and its content
-    widget's visibility. It is the native counterpart of a Streamlit expander.
+    widget's visibility.
     """
 
     def __init__(self, title: str, expanded: bool = False) -> None:
@@ -150,10 +177,14 @@ def _wrapped_label(text: str, *, selectable: bool = False) -> QLabel:
 class TriageWindow(QMainWindow):
     """The application's main window: inputs on top, results below."""
 
-    def __init__(self) -> None:
+    def __init__(self, autostart: bool = True) -> None:
         super().__init__()
         self.setWindowTitle("Alert Triage RAG")
         self._worker: _TriageWorker | None = None
+        # Set only when THIS app started a backend — the flag that decides
+        # whether closing the window should also shut one down.
+        self._backend_handle: backend.BackendHandle | None = None
+        self._backend_worker: _BackendWorker | None = None
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -193,7 +224,6 @@ class TriageWindow(QMainWindow):
         outer.addWidget(self._submit)
 
         self._status = _wrapped_label("")
-        self._status.setStyleSheet("color: #b00020;")
         outer.addWidget(self._status)
 
         # Scrollable results: an ATT&CK technique's detection text is long.
@@ -204,6 +234,43 @@ class TriageWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._results)
         outer.addWidget(scroll, stretch=1)
+
+        if autostart:
+            self._begin_autostart()
+
+    # --- backend lifecycle ---------------------------------------------------
+
+    def _begin_autostart(self) -> None:
+        """Attach to a running API, or start one, before enabling submission."""
+        # Disabled until the API answers: a click now could only fail.
+        self._submit.setEnabled(False)
+        worker = _BackendWorker(self._api_edit.text().strip().rstrip("/"))
+        worker.status.connect(self._set_status)
+        worker.ready.connect(self._on_backend_ready)
+        worker.failed.connect(self._on_backend_failed)
+        self._backend_worker = worker
+        worker.start()
+
+    def _on_backend_ready(self, handle: object) -> None:
+        # A handle means we started it, so we own stopping it (see closeEvent);
+        # None means one was already running and is not ours to touch.
+        self._backend_handle = (
+            handle if isinstance(handle, backend.BackendHandle) else None
+        )
+        self._submit.setEnabled(True)
+
+    def _on_backend_failed(self, message: str) -> None:
+        # Still allow submitting: the user may start a backend by hand, or
+        # point the endpoint field somewhere else.
+        self._submit.setEnabled(True)
+        self._set_status(message, error=True)
+
+    def closeEvent(self, event: object) -> None:
+        """Shut down only a backend this app started."""
+        if self._backend_handle is not None:
+            self._backend_handle.stop()
+            self._backend_handle = None
+        super().closeEvent(event)  # type: ignore[arg-type]
 
     # --- actions -------------------------------------------------------------
 
@@ -217,7 +284,7 @@ class TriageWindow(QMainWindow):
             return
 
         self._clear_results()
-        self._status.setText("")
+        self._set_status("")
         self._submit.setEnabled(False)
         self._submit.setText("Triaging…")
 
@@ -244,9 +311,14 @@ class TriageWindow(QMainWindow):
         self._submit.setEnabled(True)
         self._submit.setText("Triage alert")
 
+    def _set_status(self, message: str, error: bool = False) -> None:
+        """Update the one status line (red for failures, muted for progress)."""
+        self._status.setStyleSheet("color: #b00020;" if error else "color: #555;")
+        self._status.setText(message)
+
     def _show_error(self, message: str) -> None:
         self._clear_results()
-        self._status.setText(message)
+        self._set_status(message, error=True)
 
     # --- rendering -----------------------------------------------------------
 
@@ -345,10 +417,15 @@ class TriageWindow(QMainWindow):
             self._results_layout.addWidget(section)
 
 
-def main() -> int:
-    """Create the QApplication, show the window, and run the event loop."""
+def main(autostart: bool = True) -> int:
+    """Create the QApplication, show the window, and run the event loop.
+
+    Args:
+        autostart: Bring the API up on launch if it isn't already running
+            (see backend.py). False attaches to whatever is there, if anything.
+    """
     app = QApplication.instance() or QApplication(sys.argv)
-    window = TriageWindow()
+    window = TriageWindow(autostart=autostart)
     window.resize(760, 820)
     window.show()
     return app.exec()

@@ -48,7 +48,7 @@ from .schema import SourceType, TriageVerdict
 # Generation model (see CLAUDE.md: Anthropic API, Claude). The verdict is the
 # reasoning-heavy stage, so it gets the capable model; the rewrite runs on
 # Haiku (see rewrite.py).
-DEFAULT_GEN_MODEL = "claude-opus-4-8"
+DEFAULT_GEN_MODEL = "claude-sonnet-5"
 DEFAULT_TOP_K = 5
 
 # Generous ceiling: adaptive thinking tokens count against max_tokens, and a
@@ -340,7 +340,7 @@ class TriageResult:
     """A verdict together with the sources retrieval surfaced to ground it.
 
     `triage_alert` returns both so every interface can show its work: the CLI
-    prints the verdict, and the API (and through it the Streamlit UI) exposes
+    prints the verdict, and the API (and through it the desktop app) exposes
     the retrieved documents — including any runbook appended by the backfill
     guarantee — as the citation panel behind the verdict. The verdict alone
     cannot carry this: `schema.py`'s citations are only the sources the MODEL

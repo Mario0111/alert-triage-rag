@@ -60,11 +60,13 @@ jobs:
 
       # -e (editable) matches the contributor setup; [dev] pulls in
       # pytest/ruff/mypy at the exact pinned versions from pyproject.toml,
-      # so CI checks with the same tools a contributor runs locally. [ui]
-      # (streamlit) is added so the Streamlit UI test actually RUNS here —
-      # without it test_ui.py importorskip-skips and the UI goes unchecked.
+      # so CI checks with the same tools a contributor runs locally. The
+      # [desktop] extra is deliberately NOT installed: PySide6 is a heavy GUI
+      # stack, and test_desktop.py importorskips it. The shared HTTP client the
+      # desktop app depends on is covered here by test_apiclient.py, which
+      # needs no GUI toolkit.
       - name: Install package + dev tools
-        run: pip install -e ".[dev,ui]"
+        run: pip install -e ".[dev]"
 
       # The three gates, cheapest first: a lint failure aborts the job
       # before the slower type check and test run spend minutes on code

@@ -1,7 +1,7 @@
 """The FastAPI service: the single HTTP integration surface for triage.
 
-Per CLAUDE.md's Stage 2 rule, everything that wants a verdict — the CLI today,
-the Streamlit UI and the SIEM webhook later — talks to this one service, and
+Per CLAUDE.md's Stage 2 rule, everything that wants a verdict — the CLI, the
+native desktop app, and the SIEM webhook later — talks to this one service, and
 this service is a THIN wrapper: `POST /triage` calls the exact same
 `query.triage_alert` core the CLI uses. No interface grows its own triage
 logic.

@@ -41,8 +41,8 @@ packaged runbooks (triage/corpus/) ───┘                                 
 
 **Stack:** Python 3.11+ · `sentence-transformers` (`bge-small-en-v1.5`, local) ·
 `chromadb` · `anthropic` (Claude) · `pydantic` v2 · `fastapi` + `uvicorn` ·
-`streamlit` (optional `[ui]` extra) · `PySide6` (optional `[desktop]` extra).
-Installable CLI + HTTP service + browser UI + native desktop app.
+`PySide6` (optional `[desktop]` extra).
+Installable CLI + HTTP service + native desktop app.
 
 **Staleness guard:** ingestion stamps the store with a fingerprint (app
 version, embedding model, chunking parameters, corpus identity). Query and
@@ -114,9 +114,9 @@ triage query "Scheduled task created remotely via schtasks from a workstation to
 ```
 
 **`triage serve`** — run the triage HTTP API. This is the single integration
-surface: the Streamlit UI (`triage ui`) and the upcoming SIEM webhook are thin
-clients of the same endpoint, backed by the same pipeline as `triage query`.
-The embedding model
+surface: the desktop app (`triage desktop`) and the upcoming SIEM webhook are
+thin clients of the same endpoint, backed by the same pipeline as
+`triage query`. The embedding model
 and Chroma collection load once at startup; a missing or stale store aborts
 startup with the `triage ingest` remedy instead of serving errors. Binds
 `127.0.0.1` by default — expose it deliberately with `--host 0.0.0.0`.
@@ -146,34 +146,66 @@ Responses: `200` with the envelope; `422` if the request body fails validation;
 `502` if the upstream model produced nothing the service can vouch for
 (API failure, refusal, or a verdict that failed grounding validation).
 
-**`triage ui`** — launch the Streamlit UI, a thin browser client of the API
-(it calls `POST /triage` over HTTP and imports no pipeline code of its own).
-Streamlit is an optional extra, so install it first with
-`pip install "alert-triage-rag[ui]"` (a plain install skips it). Point the UI
-at a running `triage serve` with `--api-url` or the `TRIAGE_API_URL` env var
-(default `http://127.0.0.1:8000`).
-
-```bash
-triage serve                                  # in one terminal
-triage ui                                     # in another → http://127.0.0.1:8501
-# options: --api-url --host --port
-```
-
 **`triage desktop`** — launch the **native desktop app** (Qt/PySide6): a real
-application window rather than a browser tab, but the same kind of thin client
-(it POSTs to `/triage` over HTTP and imports no pipeline code). PySide6 is a
-separate optional extra — `pip install "alert-triage-rag[desktop]"` — and, like
-the UI, it points at a running API via `--api-url`, the `TRIAGE_API_URL` env
-var, or the editable API-endpoint field in the window (default
-`http://127.0.0.1:8000`). It runs on your machine against a local `triage serve`
-or the containerized API; it is **not** part of the Docker image (a GUI has no
-place in a headless container).
+application window, and a thin client like everything else (it POSTs to
+`/triage` over HTTP and imports no pipeline code). PySide6 is an optional extra,
+so install it first with `pip install "alert-triage-rag[desktop]"` (a plain
+install skips it). Choose the API with `--api-url`, the `TRIAGE_API_URL` env
+var, or the editable endpoint field in the window (default
+`http://127.0.0.1:8000`). The app is **not** part of the Docker image (a GUI has
+no place in a headless container).
+
+**It starts the backend for you.** On launch the app checks `/health`; if
+nothing answers *and* the URL is local, it brings a backend up and waits for it,
+showing progress. What it starts depends on how the app itself is running:
+
+| Running as | Backend it starts | Why |
+|---|---|---|
+| source / venv (`triage desktop`) | `python -m triage.serve` | that interpreter already has the pipeline installed |
+| the packaged `.exe` | the Docker container | the bundled interpreter deliberately has no pipeline (see below) |
+
+It shuts down **only** a backend it started — attach to your own `triage serve`
+and the app leaves it running when you close the window. Pass `--no-autostart`
+to disable this and only ever attach to something already running.
 
 ```bash
 triage serve                                  # in one terminal (or docker compose up)
 triage desktop                                # opens the native window
 # options: --api-url
 ```
+
+### Build the desktop app as a standalone .exe
+
+PyInstaller bundles the app, the CPython interpreter, and the Qt libraries into
+one double-clickable executable, so the target machine needs no Python at all.
+The build config lives in `packaging/alert-triage-desktop.spec` (checked in, so
+the build is reproducible rather than a remembered command line):
+
+```bash
+pip install -e ".[desktop,exe]"
+python -m PyInstaller packaging/alert-triage-desktop.spec
+# -> dist/alert-triage-desktop.exe  (~47 MB)
+```
+
+Notes:
+
+- **It is still a thin client.** The spec explicitly *excludes* torch, chromadb,
+  anthropic, fastapi and friends — that exclusion is an assertion that the GUI
+  never reaches into the pipeline, and it is why the artifact is ~47 MB instead
+  of gigabytes.
+- **It therefore needs Docker to be installed and running**, because that is the
+  backend it starts (it cannot start `triage serve` — the bundled interpreter
+  has no pipeline in it, by design). The container it runs uses the same image
+  and the same named volume as `docker compose`, so it reuses your ingested
+  store. If Docker isn't running, the app says so in the window rather than
+  failing silently.
+- **One file, slower start.** Everything is packed into the single .exe, which
+  unpacks to a temp directory on each launch — expect a second or two before the
+  window appears. Switch the spec to the onedir layout if you'd rather have a
+  folder that starts instantly.
+- **The binary is unsigned.** It runs fine locally, but Windows SmartScreen (or
+  antivirus) may warn other users on first run — code signing is what removes
+  that, and it needs a certificate.
 
 ## Run it with Docker
 
@@ -189,18 +221,15 @@ export ANTHROPIC_API_KEY=sk-ant-...   # PowerShell: $env:ANTHROPIC_API_KEY="..."
 #    volume and embeds the corpus — a few minutes)
 docker compose run --rm api ingest
 
-# 2. Serve the API and the UI
+# 2. Serve the API
 docker compose up
 ```
 
 `GET /health` and `POST /triage` then answer on `http://127.0.0.1:8000`, exactly
-as with `triage serve` — the container runs the same CLI. The **UI** comes up
-alongside it on `http://127.0.0.1:8501`: a second container from the *same
-image*, running `triage ui` against the API by its compose service name
-(`http://api:8000`). It starts only once the API is healthy
-(`depends_on: condition: service_healthy`), so it never races a still-loading
-model. Open the UI in a browser, type an alert, and read the grounded verdict
-with its citation panels.
+as with `triage serve` — the container runs the same CLI. Compose serves only
+the API: the user interface is the native desktop app, which runs on your
+machine (a GUI cannot display from a headless container). Start the container,
+then run `triage desktop` and point it at `http://127.0.0.1:8000`.
 
 Notes:
 
@@ -257,9 +286,12 @@ _Demo screenshot coming soon._
 
 ```
 pyproject.toml        packaging: metadata, pinned deps, `triage` entry point
+packaging/
+  desktop_entry.py    PyInstaller entry point for the desktop app
+  alert-triage-desktop.spec   PyInstaller build config (standalone .exe)
 Dockerfile            multi-stage image build (wheel -> slim runtime, model baked in)
 .dockerignore         what never enters the build context
-docker-compose.yml    API + UI services (one image, two commands) + Chroma volume
+docker-compose.yml    API service + Chroma volume + /health healthcheck
 .github/workflows/
   ci.yml              ruff + mypy + pytest on every push/PR
   release.yml         on a v* tag: wheel -> GitHub Release, image -> GHCR
@@ -275,9 +307,8 @@ triage/               core package
   fingerprint.py      store staleness fingerprint (written at ingest, checked at load)
   api.py              FastAPI app: POST /triage, GET /health
   serve.py            `triage serve` (uvicorn runner)
-  apiclient.py        stdlib-urllib client for /triage (shared by both GUIs)
-  ui.py               Streamlit UI (thin HTTP client of the API)
-  ui_launch.py        `triage ui` (lazy-imports streamlit, launches ui.py)
+  apiclient.py        stdlib-urllib client for /triage (used by every thin client)
+  backend.py          autostart policy: bring the API up if nothing answers
   desktop.py          native Qt/PySide6 desktop app (thin HTTP client)
   desktop_launch.py   `triage desktop` (lazy-imports PySide6, runs desktop.py)
   schema.py           Pydantic output contract for the verdict

@@ -82,7 +82,7 @@ def _all_text(window: desktop.TriageWindow) -> str:
 
 
 def test_window_renders_verdict_and_source_panels(qapp: QApplication) -> None:
-    window = desktop.TriageWindow()
+    window = desktop.TriageWindow(autostart=False)
     window._render_result(_envelope())
 
     text = _all_text(window)
@@ -103,7 +103,7 @@ def test_window_renders_verdict_and_source_panels(qapp: QApplication) -> None:
 
 
 def test_empty_alert_shows_error_without_requesting(qapp: QApplication) -> None:
-    window = desktop.TriageWindow()
+    window = desktop.TriageWindow(autostart=False)
     # No worker should be created for an empty alert.
     window._on_submit()
     assert window._worker is None
@@ -111,7 +111,7 @@ def test_empty_alert_shows_error_without_requesting(qapp: QApplication) -> None:
 
 
 def test_error_is_shown_in_status(qapp: QApplication) -> None:
-    window = desktop.TriageWindow()
+    window = desktop.TriageWindow(autostart=False)
     window._on_failure("API returned 502: boom")
     assert "502" in window._status.text()
     # A failure re-enables the submit button (not left stuck on "Triaging…").

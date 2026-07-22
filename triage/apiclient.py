@@ -1,10 +1,11 @@
 """Tiny HTTP client for the triage API, shared by every thin-client interface.
 
-Both the Streamlit UI (ui.py) and the native desktop app (desktop.py) are thin
-clients of ``POST /triage`` (CLAUDE.md's single-integration-surface rule). Their
-one piece of shared logic — build the request, call the endpoint, turn transport
-and HTTP errors into a human message — lives here so it is written and tested
-once, independent of any GUI toolkit.
+The native desktop app (desktop.py) — and any future thin client, such as the
+SIEM webhook — talks to ``POST /triage`` (CLAUDE.md's single-integration-surface
+rule). The client-side logic they share — build the request, call the endpoint,
+turn transport and HTTP errors into a human message — lives here so it is
+written and tested once, independent of any GUI toolkit. That independence is
+what lets the test suite cover this path with no GUI installed at all.
 
 Deliberately stdlib ``urllib`` only: no ``requests``/``httpx`` runtime
 dependency (the same minimal-deps choice the compose healthcheck makes), so this

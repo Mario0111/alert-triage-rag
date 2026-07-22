@@ -15,7 +15,7 @@ runbooks.
 
 Stage 2 (current): turn the pipeline into a distributable app with a
 DevOps story — installable CLI, tests + CI, FastAPI service, Docker +
-releases, Streamlit UI, and finally a SIEM homelab (Wazuh + honeypot)
+releases, a native desktop app, and finally a SIEM homelab (Wazuh + honeypot)
 feeding real alerts into the triage endpoint. Each phase is independently
 shippable so the git history tells the story. Stage 2 runs in teaching
 mode (see CLAUDE.md): every new tool/concept gets explained as it lands.
@@ -204,7 +204,16 @@ Release pipeline exercised end-to-end (tag v0.3.0 pushed on 2026-07-21):
   measurement artifact: the repo's gitignored stale alert_triage_rag.egg-info
   shadowed the venv metadata when cwd was the repo root. Not shipped.)
 
-### Phase 11 — Streamlit UI  [x]
+### Phase 11 — Streamlit UI  [x] — SUPERSEDED AND REMOVED (see Phase 11b)
+NOTE: this phase shipped as described below, then the author decided the
+deliverable should be "an actual application, not a web app". The Streamlit
+UI (triage/ui.py, triage/ui_launch.py, tests/test_ui.py, the `triage ui`
+verb, the [ui] extra, the compose `ui` service, and the image's [ui] install)
+was REMOVED in Phase 11b. What SURVIVES from this phase, and is the reason it
+still matters, is the API-side work: the retrieval envelope on POST /triage
+(TriageResponse) and query.TriageResult, both of which the desktop app now
+consumes. The record below is kept as the decision history.
+
 Claude-owned. Thin client of the API: alert text box, rendered verdict,
 expandable citation panels showing retrieved chunks (incl. backfilled
 runbook marking). Done when: demoable in a screen-share.
@@ -257,7 +266,14 @@ Verified on the dev machine (real, not simulated):
 
 ### Phase 11b — Native desktop app  [x]
 Claude-owned. Added after Phase 11 on author request ("an actual application,
-not just a web app"): a native-window desktop client, not a browser UI.
+not just a web app"): a native-window desktop client, not a browser UI. The
+Streamlit UI was then REMOVED entirely (author decision) — one UI, not two.
+Removal covered: triage/ui.py, triage/ui_launch.py, tests/test_ui.py, the
+`triage ui` verb, the [ui] extra, the streamlit mypy override, the compose
+`ui` service, the image's [ui] install (Dockerfile back to
+[project.dependencies] only), and CI back to `.[dev]`. apiclient.py — created
+to be shared between the two GUIs — stays: it is still the tested,
+toolkit-free client the desktop app (and the Phase 12 SIEM) uses.
 Delivered:
 - Kept the architecture: still a THIN CLIENT of POST /triage (imports no
   pipeline). Extracted the shared HTTP client to triage/apiclient.py
@@ -289,6 +305,45 @@ Verified on the dev machine:
   (cited/not-cited marks) and the full ATT&CK text — proving the worker ->
   live API -> signal -> render chain, not just unit-level rendering.
 - `triage --help` lists ingest/query/serve/ui/desktop.
+Standalone executable (PyInstaller) also delivered:
+- packaging/desktop_entry.py + packaging/alert-triage-desktop.spec (checked in,
+  so the build is reproducible config, not a remembered command); pyinstaller
+  in a build-only [exe] extra (not [dev], not CI, not the image).
+- Built and RUN on the dev machine: dist/alert-triage-desktop.exe, 46.7 MB,
+  onefile, windowed (console=False). Smart App Control did NOT block it.
+  Verified the real Qt "windows" platform plugin bundled correctly by polling
+  for the window: processes appear with MainWindowTitle "Alert Triage RAG" and
+  a real window handle.
+- Gotcha worth keeping: with onefile, the .exe you launch is the PyInstaller
+  BOOTLOADER, which unpacks and spawns a CHILD process that owns the window.
+  Killing the parent leaves the child (and its window) alive — that is why the
+  first liveness checks reported an empty MainWindowTitle, and why cleanup must
+  target every process of that name, not just the one you started.
+- Size control is the spec's excludes (torch/chromadb/anthropic/fastapi/
+  streamlit/numpy + unused Qt Addons). They double as an ASSERTION of the
+  thin-client rule: if the GUI ever imported the pipeline, the build breaks.
+Backend autostart (author request: "executing the exe starts the backend"):
+- triage/backend.py: on launch the app probes /health and, if nothing answers
+  AND the URL is local, starts a backend and waits for health, reporting
+  progress. Which backend depends on the runtime: from source it spawns
+  `python -m triage.serve` (that interpreter HAS the pipeline); frozen it runs
+  the Docker image (the bundled interpreter deliberately has none — that is the
+  47 MB). Started on a worker QThread so the window paints immediately.
+- Ownership rule: `ensure_backend` returns a handle ONLY when it started
+  something; an already-running API returns None and is never stopped on close.
+  `--no-autostart` restores attach-only behavior. 7 hermetic tests
+  (test_backend.py) cover the policy with every real starter patched out.
+- Verified: the from-source branch live — probe -> spawn -> the server exited
+  during startup (local per-user store is stale at 0.4.0) -> the early-exit
+  check surfaced "run `triage ingest`" instead of waiting out the 180 s
+  timeout. The docker-down branch live: the raw named-pipe error is translated
+  to "Docker does not appear to be running. Start Docker Desktop...".
+- NOT yet verified: the frozen exe actually starting the container. Docker
+  Desktop on the dev machine is currently broken by an orphaned AF_UNIX socket
+  file (%LOCALAPPDATA%\Docker\run\dockerInference) that its Inference manager
+  fails to remove or bind; the file cannot be deleted, renamed, or accessed by
+  any user-space tool, and EnableDockerAI is already False. A reboot clears
+  orphaned socket files — retest the exe after one.
 
 ### Phase 12 — SIEM homelab  [ ]
 Paired — the normalizer shapes retrieval input. Wazuh manager VM +
@@ -329,7 +384,7 @@ produces a grounded verdict end-to-end without a human typing anything.
   returns the whole runbook — perfect at today's 2-3 chunks/runbook, worth
   revisiting if runbooks ever grow much longer.
 - Stage 2 architecture: FastAPI service as the single integration surface.
-  CLI, Streamlit UI, and the SIEM webhook are all thin clients of the same
+  CLI, the desktop app, and the SIEM webhook are all thin clients of the same
   triage core — no interface grows its own triage logic. Chosen because
   the SIEM integration needs an HTTP endpoint anyway, and schema.py
   (Pydantic v2) doubles as the FastAPI response model for free.
@@ -610,6 +665,31 @@ produces a grounded verdict end-to-end without a human typing anything.
     CI keeps its [dev,ui] install; the Dockerfile keeps only [ui]. Desktop
     coverage is the offscreen render/error tests locally plus the shared
     apiclient tests everywhere.
+  - PyInstaller packaging decisions:
+    - A checked-in .spec over a long command line: the build config is code,
+      reviewable and reproducible, and it's where the excludes live.
+    - The entry point is packaging/desktop_entry.py, NOT triage/desktop.py:
+      an entry script runs as __main__ with no package parent, so desktop.py's
+      relative import would fail there — the same trap that broke ui.py under
+      `streamlit run`. Importing by absolute name keeps the package context.
+    - onefile over onedir: one double-clickable artifact for a hand-distributed
+      demo, accepting the per-launch unpack (a second or two of startup).
+    - console=False (a GUI app has no console), which means stray stdout goes
+      nowhere — so the app must report failures IN the window, which it does.
+    - UPX compression left OFF: it raises antivirus/SmartScreen false-positive
+      odds on an already-unsigned binary to save MB that don't matter here.
+    - The .exe is UNSIGNED. Fine locally (SAC allowed it), but other machines
+      may see a SmartScreen warning; removing that needs a code-signing cert.
+      Not pursued — no interview value for a portfolio demo.
+    - Building the .exe in CI/release is NOT set up: it needs a Windows runner
+      and would publish an unsigned binary. Parked deliberately.
+  - Removing the Streamlit UI rather than keeping both: two UIs mean two
+    things to maintain, demo, and explain, for one job. The desktop app is the
+    author's chosen deliverable ("an actual application"), so the web UI became
+    dead weight. Kept from it: the API retrieval envelope (Phase 11's real
+    architectural work, now consumed by the desktop app) and apiclient.py. The
+    [ui]-vs-runtime-dep reasoning below is retained as decision history — the
+    same framework produced the [desktop] extra.
   - No version bump for the desktop app: it's a client-only addition that
     changes nothing in ingestion or the store fingerprint, so it doesn't need
     to stale any store. Release numbering is the author's call at tag time.
@@ -654,3 +734,34 @@ produces a grounded verdict end-to-end without a human typing anything.
 - Uninstall leaves the data dir behind (~700 MB with the bundle + store):
   normal CLI-app behavior, but README could gain an "uninstall fully"
   note (`pipx uninstall` + delete %LOCALAPPDATA%\alert-triage-rag).
+- DEFERRED TO FINAL POLISH (Phase 13) — generation model + prompt tuning:
+  - Sonnet vs Opus for DEFAULT_GEN_MODEL. Currently claude-opus-4-8. The
+    generation step is grounded synthesis over ~5 retrieved documents
+    (reading comprehension + structured extraction + a judgment call), not
+    frontier reasoning, so claude-sonnet-5 is likely sufficient. Pricing:
+    Opus 4.8 $5/$25 per 1M in/out vs Sonnet 5 $3/$15 ($2/$10 introductory
+    through 2026-08-31) — ~40% cheaper (~60% intro), same tokenizer so the
+    comparison is straight, and faster (visible in the desktop app's latency).
+    Matters most for Phase 12: an internet-facing honeypot can call /triage
+    thousands of times a day (see the alert-volume question above).
+  - Cheap to try: gen_model is NOT a fingerprint field, so switching does not
+    stale the store; it is already a CLI/API flag (--gen-model). Sonnet 5
+    supports everything the code uses (adaptive thinking, effort, structured
+    outputs via messages.parse). One-line default change.
+  - Arguments for keeping Opus, to actually test rather than assume: judging
+    that a BACKFILLED runbook does not apply (resisting the pull of provided
+    context), confidence calibration, and retry rate — a verdict that fails
+    the grounding cross-check costs a full second call, which erodes the
+    saving. The existing safety net (schema + grounding cross-check + one
+    feedback retry) is what makes trying a cheaper model safe: failures are
+    caught, not silently shipped.
+  - BLOCKER for deciding either way: there is no verdict eval. 79 hermetic
+    tests cover plumbing, nothing measures verdict QUALITY. Needs a small
+    labeled set (~20-30 alerts with expected disposition + expected technique
+    ids) and a runner scoring disposition agreement, citation validity, and
+    retry rate per --gen-model. Real API calls, so run on demand, not in CI.
+    Interview value: "benchmarked both and chose X" beats "used the biggest
+    model" — and it is the same local-routine/frontier-for-hard-cases story
+    already promised in the Phase 13 writeup.
+  - Prompt fine-tuning is part of the same pass. NOTE: the grounding prompt in
+    query.py is AUTHOR-OWNED — Claude proposes, author writes.

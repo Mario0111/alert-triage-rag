@@ -2,7 +2,8 @@
 
 Hermetic: the one outside call is ``urllib.request.urlopen``, faked here, so the
 request building, envelope decode, and error-message mapping are all exercised
-without a server, streamlit, or Qt.
+without a server and without any GUI toolkit — which is why this file, unlike
+test_desktop.py, runs in CI where PySide6 is not installed.
 """
 
 from __future__ import annotations

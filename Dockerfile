@@ -94,14 +94,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # the generated file lives inside the build, so pyproject.toml stays the
 # single source of truth and no second dependency list can drift.
 #
-# The [ui] EXTRA (streamlit) is folded in here too, because this one image runs
-# BOTH the API (`triage serve`) and the Streamlit UI (`triage ui`) — compose
-# starts two containers from it (decision: one image, different commands). The
-# [dev] extra is deliberately NOT included: no test/lint tooling ships in the
-# runtime image. pyproject.toml stays the single source of truth for both.
+# Only [project.dependencies] — no extras. [dev] would ship test/lint tooling,
+# and [desktop] would ship a Qt GUI stack into a headless container that can
+# never display a window. The desktop app is a separate client that runs on the
+# user's machine and talks to this container over HTTP.
 COPY pyproject.toml /tmp/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -c "import tomllib, sys; p = tomllib.load(open('/tmp/pyproject.toml','rb'))['project']; sys.stdout.write(chr(10).join(p['dependencies'] + p['optional-dependencies']['ui']))" > /tmp/requirements.txt \
+    python -c "import tomllib, sys; sys.stdout.write(chr(10).join(tomllib.load(open('/tmp/pyproject.toml','rb'))['project']['dependencies']))" > /tmp/requirements.txt \
  && pip install -r /tmp/requirements.txt \
  && rm /tmp/requirements.txt /tmp/pyproject.toml
 

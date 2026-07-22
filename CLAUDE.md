@@ -61,12 +61,15 @@ distributable application with a real DevOps story:
 3. FastAPI service exposing `POST /triage` — the verdict schema in
    `triage/schema.py` doubles as the response model.
 4. Docker + compose + tagged releases (wheel + image to GHCR).
-5. Streamlit UI (now explicitly approved) as a client of the API.
+5. Native desktop UI (PySide6/Qt, explicitly approved) as a client of the
+   API, packaged to a standalone executable with PyInstaller. A Streamlit
+   web UI was built first and then REMOVED by author decision — the
+   deliverable is a real application, not a web app.
 6. SIEM homelab integration: Wazuh + honeypot feeding real alerts into
    the same `POST /triage` endpoint.
 
 Key architectural rule for Stage 2: **the FastAPI service is the single
-integration surface.** CLI, UI, and SIEM webhook are all thin clients of
+integration surface.** CLI, desktop UI, and SIEM webhook are all thin clients of
 the same `triage/` core. Don't let any interface grow its own triage
 logic. Sequence, status, and decisions live in PLAN.md.
 
@@ -80,8 +83,9 @@ logic. Sequence, status, and decisions live in PLAN.md.
 - Generation: Anthropic API (`anthropic` SDK), Claude.
 - Output validation: `pydantic` v2.
 - Interface: installable CLI (entry points). For Stage 2: `fastapi` +
-  `uvicorn` for the service layer, Streamlit for the UI (both explicitly
-  approved). `platformdirs` for per-user data paths.
+  `uvicorn` for the service layer, `PySide6` (Qt) for the native desktop
+  UI (all explicitly approved). `platformdirs` for per-user data paths.
+  GUI deps are OPTIONAL extras (`[desktop]`), never runtime deps.
 
 ## Hard constraints
 
@@ -110,7 +114,7 @@ persistence boilerplate, STIX parsing glue, CLI argument handling,
 
 Stage 2 additions — Claude can freely own: `pyproject.toml` and packaging,
 data-directory handling, tests, CI workflows, Dockerfile/compose, the
-FastAPI plumbing, the Streamlit UI. Paired (Claude proposes, author
+FastAPI plumbing, the desktop UI + its packaging. Paired (Claude proposes, author
 decides): the SIEM alert normalizer (it shapes what the retrieval pipeline
 sees, so it touches author-owned reasoning).
 
