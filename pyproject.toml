@@ -84,6 +84,16 @@ dependencies = [
 ui = [
     "streamlit==1.60.0",
 ]
+# The native desktop app (Qt via PySide6). Another OPTIONAL client extra, same
+# reasoning as [ui]: it's a thin client of the API, never needed by the CLI,
+# API, or SIEM, and PySide6 is very heavy (the Qt runtime, ~250 MB installed).
+# `triage desktop` lazy-imports it, so a plain install runs without it and only
+# asks for [desktop] if you request the app. Unlike [ui] it is NOT installed
+# into the Docker image — a GUI has no place in a headless container; the
+# desktop app runs on your machine against the containerized (or local) API.
+desktop = [
+    "PySide6==6.11.1",
+]
 dev = [
     # Test runner: discovers tests/, runs them, reports failures with
     # introspected assert output (no assertEqual boilerplate needed).
@@ -183,7 +193,7 @@ warn_unused_ignores = true
 # silence typos in OUR import statements. streamlit is here for the same
 # reason AND so mypy passes whether or not the optional [ui] extra is
 # installed (a plain [dev] checkout has no streamlit).
-module = ["sentence_transformers.*", "transformers.*", "streamlit.*"]
+module = ["sentence_transformers.*", "transformers.*", "streamlit.*", "PySide6.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

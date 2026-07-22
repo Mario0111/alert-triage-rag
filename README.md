@@ -41,7 +41,8 @@ packaged runbooks (triage/corpus/) ───┘                                 
 
 **Stack:** Python 3.11+ · `sentence-transformers` (`bge-small-en-v1.5`, local) ·
 `chromadb` · `anthropic` (Claude) · `pydantic` v2 · `fastapi` + `uvicorn` ·
-`streamlit` (optional `[ui]` extra). Installable CLI + HTTP service + browser UI.
+`streamlit` (optional `[ui]` extra) · `PySide6` (optional `[desktop]` extra).
+Installable CLI + HTTP service + browser UI + native desktop app.
 
 **Staleness guard:** ingestion stamps the store with a fingerprint (app
 version, embedding model, chunking parameters, corpus identity). Query and
@@ -158,6 +159,22 @@ triage ui                                     # in another → http://127.0.0.1:
 # options: --api-url --host --port
 ```
 
+**`triage desktop`** — launch the **native desktop app** (Qt/PySide6): a real
+application window rather than a browser tab, but the same kind of thin client
+(it POSTs to `/triage` over HTTP and imports no pipeline code). PySide6 is a
+separate optional extra — `pip install "alert-triage-rag[desktop]"` — and, like
+the UI, it points at a running API via `--api-url`, the `TRIAGE_API_URL` env
+var, or the editable API-endpoint field in the window (default
+`http://127.0.0.1:8000`). It runs on your machine against a local `triage serve`
+or the containerized API; it is **not** part of the Docker image (a GUI has no
+place in a headless container).
+
+```bash
+triage serve                                  # in one terminal (or docker compose up)
+triage desktop                                # opens the native window
+# options: --api-url
+```
+
 ## Run it with Docker
 
 The container is the zero-Python path: the image ships the pinned dependencies,
@@ -258,8 +275,11 @@ triage/               core package
   fingerprint.py      store staleness fingerprint (written at ingest, checked at load)
   api.py              FastAPI app: POST /triage, GET /health
   serve.py            `triage serve` (uvicorn runner)
+  apiclient.py        stdlib-urllib client for /triage (shared by both GUIs)
   ui.py               Streamlit UI (thin HTTP client of the API)
   ui_launch.py        `triage ui` (lazy-imports streamlit, launches ui.py)
+  desktop.py          native Qt/PySide6 desktop app (thin HTTP client)
+  desktop_launch.py   `triage desktop` (lazy-imports PySide6, runs desktop.py)
   schema.py           Pydantic output contract for the verdict
   corpus/runbooks/    hand-written runbooks (markdown, ship in the wheel)
 corpus/

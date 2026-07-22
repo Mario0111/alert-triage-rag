@@ -36,24 +36,16 @@ interviewed on every one):
 
 from __future__ import annotations
 
-import json
-import os
 import urllib.error
-import urllib.request
 from typing import Any
 
 import streamlit as st
 
-# Default points at a local `triage serve` (127.0.0.1:8000). In compose the
-# launcher (`triage ui --api-url http://api:8000`) overrides it via this env
-# var, so the UI reaches the API by its compose SERVICE NAME with no code
-# change. Precedence mirrors the data-dir pattern: an explicit flag becomes
-# this env var, which falls back to the local default.
-DEFAULT_API_URL = "http://127.0.0.1:8000"
-
-# A real triage call embeds the alert locally AND calls Claude, so it can take
-# many seconds. Be patient rather than timing out a legitimately-working call.
-_REQUEST_TIMEOUT_S = 120
+# ABSOLUTE import, not `from . import`: streamlit runs this file as a standalone
+# script (no package parent), so a relative import raises "attempted relative
+# import with no known parent package". `triage` is always installed when the
+# packaged ui.py is launched, so the absolute form resolves the same module.
+from triage import apiclient
 
 # How the disposition string renders — purely cosmetic, keeps the verdict
 # scannable at a glance.
@@ -69,59 +61,6 @@ _SEVERITY_LABELS = {
     "high": "High",
     "critical": "Critical",
 }
-
-
-def api_base_url() -> str:
-    """Resolve the API base URL: ``TRIAGE_API_URL`` env, else the local default."""
-    return os.environ.get("TRIAGE_API_URL", DEFAULT_API_URL).rstrip("/")
-
-
-def post_triage(api_url: str, alert: str, top_k: int) -> dict[str, Any]:
-    """POST one alert to ``/triage`` and return the parsed response envelope.
-
-    Uses the stdlib ``urllib`` only — no ``requests``/``httpx`` runtime
-    dependency, the same minimal-deps choice the compose healthcheck makes.
-
-    Args:
-        api_url: Base URL of the triage API (no trailing slash).
-        alert: The analyst's alert text.
-        top_k: How many source documents to request as grounding.
-
-    Returns:
-        The decoded ``TriageResponse`` JSON: ``{"verdict": {...},
-        "retrieved": [...]}``.
-
-    Raises:
-        urllib.error.HTTPError: On a non-2xx response (e.g. 422 bad input, 502
-            upstream-model failure). The error object still carries the JSON
-            body, so the caller can surface the ``detail`` message.
-        urllib.error.URLError: On a transport failure (API down / unreachable).
-    """
-    payload = json.dumps({"alert": alert, "top_k": top_k}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{api_url}/triage",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
-        result: dict[str, Any] = json.load(response)
-        return result
-
-
-def _http_error_detail(exc: urllib.error.HTTPError) -> str:
-    """Pull the API's ``detail`` message out of an HTTPError body if present.
-
-    FastAPI reports both its 422 validation errors and our 502 upstream
-    failures as JSON with a ``detail`` field; fall back to the raw body when it
-    is not the shape we expect.
-    """
-    try:
-        body = json.load(exc)
-    except (json.JSONDecodeError, ValueError):
-        return exc.reason or "unknown error"
-    detail = body.get("detail", body)
-    return detail if isinstance(detail, str) else json.dumps(detail)
 
 
 def render_verdict(verdict: dict[str, Any]) -> None:
@@ -207,7 +146,7 @@ def main() -> None:
         "MITRE ATT&CK techniques and internal runbooks."
     )
 
-    api_url = api_base_url()
+    api_url = apiclient.api_base_url()
     st.sidebar.markdown("**API endpoint**")
     st.sidebar.code(api_url)
     st.sidebar.caption(
@@ -234,24 +173,16 @@ def main() -> None:
             # plus a Claude round-trip.
             with st.spinner("Retrieving sources and generating a verdict…"):
                 try:
-                    st.session_state["result"] = post_triage(
+                    st.session_state["result"] = apiclient.post_triage(
                         api_url, alert_text.strip(), top_k
                     )
                     st.session_state.pop("error", None)
-                except urllib.error.HTTPError as exc:
-                    # The service answered, but with an error status. 422 = the
-                    # request body failed validation; 502 = the upstream model
-                    # failed us. Show the API's own detail message.
-                    st.session_state["error"] = (
-                        f"API returned {exc.code}: {_http_error_detail(exc)}"
-                    )
-                    st.session_state.pop("result", None)
                 except urllib.error.URLError as exc:
-                    # No response at all — the API is down or unreachable.
-                    st.session_state["error"] = (
-                        f"Could not reach the API at {api_url} ({exc.reason}). "
-                        "Is `triage serve` (or the api container) running?"
-                    )
+                    # HTTPError (422/502 — the service answered with an error) is
+                    # a subclass of URLError (no response at all — API down), so
+                    # one catch covers both; apiclient.error_message tells them
+                    # apart into an analyst-facing line.
+                    st.session_state["error"] = apiclient.error_message(exc, api_url)
                     st.session_state.pop("result", None)
 
     # Render FROM session_state, not from the local `submitted` branch, so the

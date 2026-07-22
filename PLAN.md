@@ -255,6 +255,41 @@ Verified on the dev machine (real, not simulated):
   needs a forced model failure) alongside the api.py 422/502 mapping.
 - Stack torn down with `docker compose down` (volume preserved).
 
+### Phase 11b — Native desktop app  [x]
+Claude-owned. Added after Phase 11 on author request ("an actual application,
+not just a web app"): a native-window desktop client, not a browser UI.
+Delivered:
+- Kept the architecture: still a THIN CLIENT of POST /triage (imports no
+  pipeline). Extracted the shared HTTP client to triage/apiclient.py
+  (stdlib-urllib post_triage + error_message), now used by BOTH the Streamlit
+  UI and the desktop app — one tested network path, GUI-toolkit-free.
+- triage/desktop.py: PySide6 (Qt) app. Real native window; the multi-second
+  request runs on a worker QThread and returns via signals so the GUI thread
+  never freezes; verdict block + a custom collapsible (_Collapsible) per
+  retrieved source (cited/uncited/backfilled), mirroring the Streamlit
+  expanders. triage/desktop_launch.py + `triage desktop` verb (cli.py): lazy
+  PySide6 import (same pattern as ui_launch), runs in-process (a Qt app isn't
+  a `streamlit run` server). --api-url > TRIAGE_API_URL > default, also
+  editable live in the window.
+- PySide6 is the [desktop] EXTRA (heavy optional client, same reasoning as
+  [ui]); NOT added to the Docker image (a GUI has no place in a headless
+  container) and NOT to CI (test_desktop.py importorskips it). 6.11.1 is an
+  abi3 wheel, so it runs on the 3.14 dev machine.
+- 76 tests (69 -> +4 test_apiclient hermetic, +3 test_desktop offscreen
+  render/error). test_apiclient covers the shared client in CI without Qt.
+Verified on the dev machine:
+- ruff / mypy / 76 pytest green from a TRIAGE_DATA_DIR-less shell.
+- Caught by the new tests: adding `from . import apiclient` to ui.py broke it
+  under `streamlit run` (script has no package parent — relative import
+  fails); fixed to an absolute `from triage import apiclient`. Would have
+  broken the containerized Streamlit UI too.
+- Real native path end-to-end (headless/offscreen) against the LIVE
+  containerized API: the QThread worker POSTed a brute-force-to-C2 alert and
+  the window rendered true_positive/High/85% with five source panels
+  (cited/not-cited marks) and the full ATT&CK text — proving the worker ->
+  live API -> signal -> render chain, not just unit-level rendering.
+- `triage --help` lists ingest/query/serve/ui/desktop.
+
 ### Phase 12 — SIEM homelab  [ ]
 Paired — the normalizer shapes retrieval input. Wazuh manager VM +
 telemetry sources feeding it; custom integratord script POSTs qualifying
@@ -546,6 +581,38 @@ produces a grounded verdict end-to-end without a human typing anything.
     just streamlit.
   - The three parked lint/type proposals (retrieve.py B905, schema.py UP042,
     the retrieve/chunk mypy disables) stay parked — untouched this phase.
+- Phase 11b desktop decisions:
+  - "Actual application" = native window, so a native GUI over a browser-in-a-
+    window (pywebview) wrapper — the latter is still a web app under the hood.
+    Toolkit: PySide6 (Qt) over Tkinter. Tkinter would be zero-deps (stdlib) and
+    the more minimal-deps-pure choice, but the author wanted a real
+    application-grade look; PySide6 is a defensible, widely-used professional
+    binding and its abi3 wheels install on 3.14. Cost accepted: a large
+    optional [desktop] extra.
+  - Thin client, connect to a running API (not bundle/launch the backend): the
+    pipeline is ~2 GB (torch + model + Chroma), which can't sanely go in a
+    double-click app, and auto-launching `triage serve` would still require all
+    of that installed. So the desktop app stays small and talks HTTP to a
+    backend the user runs (local serve or the container) — the same posture as
+    the Streamlit UI, and it keeps the single-integration-surface rule intact.
+  - Shared apiclient.py: the moment there were TWO thin-client GUIs, the HTTP
+    call + error-message mapping were duplicated. Extracted to a stdlib-only
+    module both import, so the network path is written and tested once
+    (test_apiclient runs in CI with no GUI toolkit). ui.py must import it
+    ABSOLUTELY (`from triage import apiclient`), not relatively, because
+    streamlit runs ui.py as a script with no package parent.
+  - Qt threading is the load-bearing detail: a blocking request on the GUI
+    thread freezes the window, so the request runs on a worker QThread and the
+    result crosses back via a queued signal/slot — the thread-safe way to touch
+    widgets from work done off-thread.
+  - Not in CI, not in Docker: PySide6 is heavy and GUI-only. test_desktop.py
+    importorskips it (offscreen QT_QPA_PLATFORM for a display-less render test);
+    CI keeps its [dev,ui] install; the Dockerfile keeps only [ui]. Desktop
+    coverage is the offscreen render/error tests locally plus the shared
+    apiclient tests everywhere.
+  - No version bump for the desktop app: it's a client-only addition that
+    changes nothing in ingestion or the store fingerprint, so it doesn't need
+    to stale any store. Release numbering is the author's call at tag time.
 - SIEM: Wazuh. Free, single-VM friendly, ships rule->ATT&CK technique
   mappings (dovetails with the corpus), and its integratord hook makes
   "call a script with the alert JSON" a first-class feature.
