@@ -345,6 +345,67 @@ Backend autostart (author request: "executing the exe starts the backend"):
   any user-space tool, and EnableDockerAI is already False. A reboot clears
   orphaned socket files — retest the exe after one.
 
+### Phase 11c — Windows installer  [x]
+Claude-owned, teaching mode. Added after Phase 11b on author request: a REAL
+installer (install location, Start Menu shortcuts, optional PATH entry, an
+Apps & Features entry, an uninstaller) so the app runs with NO Docker and NO
+prerequisites. The frozen 47 MB .exe stays — it is the artifact for the Docker
+path; this is a separate story.
+Files: packaging/build_payload.ps1, packaging/sitecustomize.py,
+packaging/alert-triage.iss, packaging/README.md. No triage/ source changed —
+the installer needed zero application code, which is itself the evidence that
+backend.py's autostart policy was written at the right level of abstraction.
+Delivered (see the decisions log for the why of each):
+- Payload = a real Python installation with the app `pip install`ed into it,
+  copied verbatim — NOT a PyInstaller freeze of the pipeline.
+- Base interpreter = the python.org WINDOWS EMBEDDABLE PACKAGE, not a venv
+  (a venv has no stdlib of its own; see the log).
+- One payload, three tiers by component omission: Desktop (core+gui+pipeline),
+  CLI only (core+pipeline), Thin client (core+gui).
+- The component manifest is COMPUTED by diffing pip installs, never hand-listed.
+- bge-small-en-v1.5 BUNDLED; ATT&CK bundle and Chroma store built on first run.
+- Model discovery via packaging/sitecustomize.py (HF_HOME relative to itself).
+Verified on the dev machine (real, not simulated) — installer built at 519 MB
+from a 2022 MB payload (ISCC, 7 min), then all three tiers installed, exercised
+and uninstalled:
+- ruff / mypy / 79 pytest green from a TRIAGE_DATA_DIR-less shell. No triage/
+  source was changed at all this phase.
+- BUILD-TIME PROOF the approach works: the embeddable 3.11 payload imports
+  torch 2.13.0+cpu, chromadb, fastapi, sentence-transformers, PySide6 and
+  triage.cli. That is the check a PyInstaller freeze cannot give you, and it is
+  the entire argument for shipping an installed tree.
+- THIN (682 MB): core+gui only — no torch/chromadb/transformers/numpy/
+  sentence_transformers/onnxruntime, no models/, and correctly no triage.cmd.
+  ONE Start Menu shortcut, carrying --no-autostart as designed. Launched from
+  the bundled pythonw.exe and rendered a real native window titled
+  "Alert Triage RAG".
+- CLI (1398 MB): pipeline + model, NO PySide6/shiboken6, triage.cmd present,
+  PATH task registered. `triage.cmd --help` runs (Smart App Control does not
+  block a .cmd, which is why it exists). sitecustomize resolved
+  HF_HOME=C:\atr-cli\models\hf with HF_HUB_OFFLINE=1, and `triage ingest`
+  then loaded the model — which it could ONLY have done from the bundle —
+  reading runbooks from the INSTALLED package data and producing 1607+10=1617
+  chunks, identical to the Docker figures. A real `triage query` returned a
+  true_positive/high verdict citing 07_brute_force_spray.md, T1110.001 and
+  T1133 with quotes.
+- DESKTOP (2036 MB): three shortcuts (app / "Build the triage store (run this
+  first)" / "Triage command prompt"), GUI shortcut correctly WITHOUT
+  --no-autostart. Launching the actual .lnk brought a backend up in ~6 s:
+  process tree showed the GUI (pythonw -m triage.desktop_launch) having spawned
+  `C:\atr-desk\python\pythonw.exe -m triage.serve --host 127.0.0.1 --port 8000`,
+  which owned port 8000. POST /triage returned true_positive/high/0.92 citing
+  T1059.001 + T1027.010 with the full retrieval envelope (5 sources, naturally
+  matched runbooks, backfilled flags). ZERO containers existed throughout —
+  and structurally could not: is_frozen() is False for an installed payload, so
+  backend.py's docker branch is unreachable. Closing the window stopped the
+  backend it had started and released the port (the ownership rule).
+- UNINSTALL, all three: {app} gone (including runtime __pycache__ dirs, via
+  UninstallDelete), Start Menu group gone, Apps & Features entry gone, the PATH
+  entry removed with the other 6 entries untouched, data dir preserved.
+- The MAX_PATH guard was exercised: `/DIR=` with an 84-char path (limit 62) is
+  refused with exit code 1 and no folder created, in SILENT mode — i.e. the
+  PrepareToInstall path, not just the wizard page.
+
 ### Phase 12 — SIEM homelab  [ ]
 Paired — the normalizer shapes retrieval input. Wazuh manager VM +
 telemetry sources feeding it; custom integratord script POSTs qualifying
@@ -693,6 +754,172 @@ produces a grounded verdict end-to-end without a human typing anything.
   - No version bump for the desktop app: it's a client-only addition that
     changes nothing in ingestion or the store fingerprint, so it doesn't need
     to stale any store. Release numbering is the author's call at tag time.
+- Phase 11c Windows installer decisions:
+  - PAYLOAD IS AN INSTALLED TREE, NOT A FREEZE. The installer ships a real
+    Python installation with the app `pip install`ed into it and copies it
+    verbatim. PyInstaller was rejected FOR THE PIPELINE (it stays for the thin
+    client, where nothing heavier than Qt is imported): freezing torch is a
+    known multi-day exercise, and its failures are RUNTIME failures — a missed
+    hidden import surfaces when a user clicks a button, not when the build
+    runs. Shipping an installed tree moves every such failure to build time,
+    and build_payload.ps1 makes that explicit by importing torch/chromadb/
+    sentence_transformers/PySide6/triage.cli in the payload interpreter and
+    failing the build if any of them break. "What you tested is what ships."
+  - NOT A VENV — the one correction to the original plan, and the most
+    valuable thing learned here. `python -m venv` looks shippable and is not:
+    a Windows venv holds a redirector Scripts\python.exe, Lib\site-packages
+    and pyvenv.cfg, but NOT the standard library. pyvenv.cfg records
+    `home = <base install>` and the venv interpreter loads Lib\, python3xx.dll
+    and every .pyd from there at startup. Copied to a machine with no Python
+    it is a brick — precisely the machine an installer exists to serve. (It
+    would also have forced cp314 wheels, since 3.14 is the only interpreter on
+    the dev machine.)
+    Replacement: the python.org WINDOWS EMBEDDABLE PACKAGE (~10 MB) — a
+    complete, relocatable CPython with no registry keys or installer, which is
+    the artifact python.org publishes for exactly this job. Two sharp edges,
+    both handled in build_payload.ps1: (1) it ships no pip (ensurepip is
+    stripped) so pip is bootstrapped with get-pip.py, run by the payload's OWN
+    3.11 — wheels are tagged per interpreter version, so `pip install --target`
+    from the host 3.14 would fetch wheels the payload cannot load; (2)
+    python311._pth puts the interpreter in isolated path mode (PYTHONPATH,
+    PYTHONHOME and the registry ignored — a feature: the installed app cannot
+    be broken by another Python on the machine) and DISABLES site, so the file
+    is rewritten to add Lib\site-packages and `import site`. Without that line
+    there is no site-packages on sys.path, no .pth processing (torch and
+    setuptools both rely on it), and sitecustomize is never imported — which
+    would have silently defeated the bundled-model wiring.
+  - ONE PAYLOAD, THREE TIERS BY FILE-GROUP OMISSION, not three builds. Inno
+    Setup's Types (named presets) over Components (selectable file groups) is
+    exactly the mechanism: one full payload is packed and the installer omits
+    directories per tier. Three payloads would pack PySide6 twice and torch
+    twice for a ~4 GB installer.
+    SIZE REALITY, MEASURED - and the planning estimate was WRONG, which is the
+    more useful interview story. Predicted: "CLI only saves ~10%, the thin
+    client is ~300 MB". Measured, by installing all three: Desktop 2022 MB,
+    CLI only 1398 MB, Thin client 682 MB; installer .exe 519 MB. Subtracting
+    the tiers gives the component costs: pipeline 1340 MB (66%), gui 624 MB
+    (31%), core+interpreter 58 MB (3%). So the pipeline IS the single biggest
+    cost, but Qt is nowhere near negligible: dropping the GUI saves 31%, not
+    10%. The error came from anchoring on the 47 MB PyInstaller thin-client
+    exe, which excludes most of Qt, and on PySide6's wheel sizes - the Addons
+    and Essentials wheels unpack to roughly four times their download size.
+    Only the thin client avoids shipping an ML stack at all.
+  - THE COMPONENT MANIFEST IS COMPUTED, NOT HAND-WRITTEN. build_payload.ps1
+    asks pip three times: `--no-deps --target` of our wheel = CORE, `--target`
+    of the pinned PySide6 = GUI, the payload's real site-packages = FULL, and
+    pipeline = FULL - CORE - GUI - TOOLCHAIN. The probes use --target into
+    throwaway dirs, so it costs one small download instead of a second 2 GB
+    tree, and the PySide6 requirement is read out of pyproject.toml so the
+    probe cannot drift from what was installed. A hand-written list would be
+    wrong the first time a transitive dep appeared or vanished, with nothing to
+    tell us. TOOLCHAIN (pip/setuptools/wheel/pkg_resources/_distutils_hack/
+    sitecustomize.py) is the only hand-listed set and is build tooling, not a
+    dependency of anything the app imports.
+  - ASSETS: BUNDLE THE MODEL, FETCH THE CORPUS. bge-small-en-v1.5 (~130 MB) is
+    baked into the payload — same call as the Dockerfile, same reason: first
+    launch works offline, and embed_model is an ENFORCED fingerprint field so
+    which model an install embeds with must never be ambiguous. The ATT&CK
+    bundle is still fetched by `triage ingest` (51 MB, pinned URL, refreshable)
+    and no pre-built Chroma store ships (derived data whose fingerprint every
+    version bump would immediately stale).
+  - MODEL DISCOVERY VIA sitecustomize.py. sentence-transformers takes a model
+    ID, not a path, so HF_HOME must be set before it is imported.
+    sitecustomize is a CPython startup hook (site imports it before any user
+    code), so it cannot be bypassed by any entry point, and it computes the
+    path RELATIVE TO ITS OWN __file__ so the install directory is the user's
+    choice. Rejected: a global env var (an installer has no business mutating
+    the user's environment for a private detail; it leaks into every other
+    Python on the machine and uninstall would have to unset it) and a wrapper
+    .cmd (the GUI shortcut targets pythonw.exe directly to avoid a console
+    flash, and backend.py spawns `sys.executable -m triage.serve`, which would
+    bypass a wrapper anyway).
+  - PER-USER INSTALL (PrivilegesRequired=lowest, %LOCALAPPDATA%\Programs).
+    Nothing needs machine-wide state — no services, no drivers, and the data
+    dir is already per-user — so there is no UAC prompt, and an unsigned
+    installer asking for admin would be the worst of both worlds.
+  - CLI SHIM IS triage.cmd, NOT pip's triage.exe. Smart App Control blocks
+    console-script shims (the same constraint that makes this project run
+    `python -m pytest`), so the generated Scripts\ dir is deleted from the
+    payload and a plain-text .cmd invokes `python -m triage.cli` via %~dp0.
+    triage.cmd and the PATH task are PIPELINE-ONLY: cli.py imports ingest/
+    query/serve at module level, so the command needs torch and a thin install
+    must not put a broken `triage` on PATH. Making cli.py lazy-import its
+    subcommands would lift that restriction and is a real improvement —
+    deliberately NOT folded into this work.
+  - TWO GUI SHORTCUTS, chosen by `Components: gui and pipeline` vs `gui and not
+    pipeline`. This is where the installer met backend.py and needed no code
+    change: an installed payload is not frozen, so ensure_backend takes the
+    from-source branch and spawns `sys.executable -m triage.serve` — which here
+    is the bundled pythonw.exe, whose environment HAS the pipeline. Docker
+    never enters the picture, which is the whole point of the installer. In the
+    thin tier that spawn would die on `import torch` and backend.py would
+    misreport it as a stale store, so that shortcut passes --no-autostart.
+  - NO AUTO-INGEST, consistent with the Phase 10 Docker decision: a Start Menu
+    item plus an UNTICKED post-install checkbox. Auto-ingesting would bury a
+    multi-minute network operation inside "installing" and would MUTE the
+    fingerprint — the loud "re-run `triage ingest`" refusal becoming a silent
+    self-heal on every upgrade.
+  - SolidCompression=no. Solid mode compresses better but forces the installer
+    to decompress the whole stream to extract anything, so a thin install would
+    stream ~1.7 GB to write ~300 MB — punishing exactly the tier the components
+    exist to make cheap.
+  - AppId is fixed and must never change: it is the identity Windows keys the
+    uninstall entry on, so changing it makes an upgrade install ALONGSIDE the
+    old copy (two Apps & Features entries, two 1.6 GB payloads). PATH is
+    appended as `{olddata};{app}` (replacing is the classic installer bug that
+    erases a user's PATH) and removed entry-by-entry on uninstall, since Inno
+    has no "unappend".
+  - Uninstall OFFERS to delete %LOCALAPPDATA%\alert-triage-rag, defaulting to
+    No — closes the parking-lot item below. The data dir deliberately lives
+    outside {app} so it survives upgrades, which is also why a plain uninstall
+    would otherwise strand ~700 MB.
+    REAL BUG CAUGHT BY ACTUALLY RUNNING THE UNINSTALLER, and the best "why you
+    test the uninstall path" story from this phase: the first build used plain
+    MsgBox(..., MB_YESNO or MB_DEFBUTTON2). In a SILENT uninstall (/VERYSILENT
+    /SUPPRESSMSGBOXES) there is nobody to answer, so Inno answers for us — and
+    plain MsgBox returns the AFFIRMATIVE default, IGNORING MB_DEFBUTTON2. The
+    "default to No" intent was therefore inverted in exactly the unattended
+    path, and the test uninstall silently destroyed the Chroma store AND the
+    53 MB ATT&CK bundle (minutes of re-download and re-embedding). Fix:
+    SuppressibleMsgBox(..., IDNO), whose entire purpose is to take the silent
+    answer as an explicit argument. Generalises: any [Code] prompt guarding a
+    destructive action must state its silent answer, because the interactive
+    default and the suppressed default are different mechanisms.
+  - numpy is pinned to 2.4.6 by build_payload.ps1's -NumpyPin default because
+    Smart App Control blocks the DLLs in numpy 2.5.x. It lives in the WINDOWS
+    PACKAGING SCRIPT and never in pyproject.toml: it is a platform packaging
+    constraint, not a property of the project (the Linux image takes whatever
+    torch resolves). Currently a no-op guard — chromadb's resolution landed on
+    2.4.6 anyway — kept because it will stop being one.
+  - The installer is UNSIGNED (SmartScreen warning for other users), is not
+    built in CI (needs a Windows runner, would publish an unsigned ~1 GB
+    binary), and has no custom icon. All parked deliberately, same reasoning as
+    the PyInstaller .exe.
+  - MAX_PATH shaped the build layout, and is the best "packaging is a real
+    engineering domain" story from this phase. Windows caps a full path at 260
+    chars; torch's dist-info ships vendored third-party LICENCE texts nested
+    ten directories deep (196 chars of relative path alone), so ISCC aborted
+    partway through compression with "The system cannot find the path
+    specified" naming a file that plainly existed. Deleting those files was
+    rejected — they are how a redistribution satisfies the BSD notice
+    requirements of the libraries torch bundles — so the budget came out of the
+    PREFIX instead: SourceDir=.. in the .iss (drops "packaging\..\" from ~3000
+    Source paths, 13 chars) and staging the payload at build\payload rather
+    than build\installer\payload (10 chars). LongPathsEnabled was rejected as a
+    fix: it is a per-machine admin policy, and assuming anything about a user's
+    machine contradicts the no-prerequisites premise (it is already enabled on
+    the dev machine and ISCC failed anyway — the compiler is not long-path
+    aware even though Setup 6.3+ is). Two guards keep it from ever being
+    mysterious again: build_payload.ps1 fails the build if any payload path
+    exceeds 259 chars, and it MEASURES the leftover budget for the install
+    directory (currently 62 chars) into version.iss as MaxAppDirLen, which the
+    wizard enforces on the folder-selection page with an explanation.
+  - PowerShell gotcha worth keeping: the first build_payload.ps1 run died with
+    "Missing closing '}'". Cause: em dashes written as UTF-8 with no BOM, which
+    Windows PowerShell 5.1 reads in the ANSI codepage, turning the third byte
+    into a smart quote — and PowerShell accepts smart quotes AS STRING
+    DELIMITERS, so every quote after it was unbalanced. Packaging files are
+    kept ASCII-only.
 - SIEM: Wazuh. Free, single-VM friendly, ships rule->ATT&CK technique
   mappings (dovetails with the corpus), and its integratord hook makes
   "call a script with the alert JSON" a first-class feature.
@@ -734,6 +961,14 @@ produces a grounded verdict end-to-end without a human typing anything.
 - Uninstall leaves the data dir behind (~700 MB with the bundle + store):
   normal CLI-app behavior, but README could gain an "uninstall fully"
   note (`pipx uninstall` + delete %LOCALAPPDATA%\alert-triage-rag).
+  ANSWERED for the Windows installer at Phase 11c: its uninstaller ASKS,
+  defaulting to No (deleting silently would cost a full re-download and
+  re-embed on reinstall). Still open for the pipx path.
+- Make cli.py lazy-import its subcommands (ingest/query/serve are imported at
+  module level today, so the `triage` command needs torch). Surfaced by Phase
+  11c: it is the only reason the installer's thin-client tier cannot ship a
+  working `triage` command or a PATH entry. Deliberately kept out of the
+  installer work — it is a change to CLI plumbing, testable on its own.
 - DEFERRED TO FINAL POLISH (Phase 13) — generation model + prompt tuning:
   - Sonnet vs Opus for DEFAULT_GEN_MODEL. Currently claude-opus-4-8. The
     generation step is grounded synthesis over ~5 retrieved documents

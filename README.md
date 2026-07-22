@@ -52,6 +52,63 @@ from an index built by older code.
 
 ## Install
 
+Three ways in, depending on what you want:
+
+| | Needs | Gets you |
+|---|---|---|
+| **Windows installer** | nothing | Start Menu app + `triage` command, ships its own Python and embedding model |
+| **pipx** | Python 3.11+ | the CLI and API, managed like any other CLI tool |
+| **Docker** | Docker | the API only, in a container |
+
+### Windows installer (no prerequisites)
+
+Download `alert-triage-rag-<version>-setup.exe` from the
+[Releases page](https://github.com/Mario0111/alert-triage-rag/releases) and run
+it. It installs per-user (no admin prompt, no UAC) into
+`%LOCALAPPDATA%\Programs\Alert Triage RAG`, and it needs **no Python and no
+Docker** — it ships a bundled CPython and the `bge-small-en-v1.5` embedding
+model inside the payload.
+
+It is unsigned, so SmartScreen will show "Windows protected your PC" on first
+run: **More info → Run anyway**.
+
+Pick one of three tiers on the *Select Components* page:
+
+| Tier | Installed | What it is |
+|---|---|---|
+| **Desktop app** *(recommended)* | 2.0 GB | Native window + the full local pipeline. Launching it starts its own backend — no Docker, no terminal. |
+| **Command line only** | 1.4 GB | Same pipeline, no GUI. Adds `triage` to your PATH (optional). |
+| **Thin client** | 0.7 GB | The GUI alone, pointed at a remote or containerised API via `--api-url` / `TRIAGE_API_URL`. |
+
+Sizes are measured, not estimated. The local pipeline (torch, transformers,
+chromadb, onnxruntime and the embedding model) is 1.3 GB of that and the Qt GUI
+is 0.6 GB, so dropping the GUI saves ~31% and dropping the pipeline saves ~66%.
+Only the thin client avoids the download of a machine-learning stack.
+
+After installing a tier that includes the pipeline:
+
+```powershell
+# 1. API key for the query phase (generation runs on Claude)
+setx ANTHROPIC_API_KEY "sk-ant-..."      # then open a new terminal / re-login
+
+# 2. Build the vector store: Start Menu -> "Build the triage store (run this first)"
+#    (or tick the checkbox on the installer's final page). Downloads the ~51 MB
+#    ATT&CK bundle and embeds the corpus locally - a few minutes, once.
+
+# 3. Start Menu -> "Alert Triage RAG"
+```
+
+Uninstall from **Settings → Apps**, or the Start Menu entry. The uninstaller
+removes the program, cleans its PATH entry, and *asks* whether to delete the
+data directory (`%LOCALAPPDATA%\alert-triage-rag`, ~700 MB) — say No if you
+plan to reinstall, since rebuilding it means re-downloading and re-embedding
+the whole corpus.
+
+Building the installer yourself is documented in
+[packaging/README.md](packaging/README.md).
+
+### pipx (any platform, needs Python)
+
 The recommended installer is [pipx](https://pipx.pypa.io/): it creates a
 dedicated virtual environment for the app, installs it there, and puts just
 the `triage` command on your PATH. You get an isolated install (this
