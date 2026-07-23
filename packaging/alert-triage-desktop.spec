@@ -22,6 +22,7 @@
 
 from PyInstaller.building.api import EXE, PYZ
 from PyInstaller.building.build_main import Analysis
+from PyInstaller.utils.hooks import copy_metadata
 
 # The pipeline has no business inside a GUI client. These excludes are a
 # DELIBERATE ASSERTION of CLAUDE.md's thin-client rule: the desktop app talks to
@@ -81,7 +82,25 @@ a = Analysis(
     # Resolve `import triage` from the repo root (this spec lives in packaging/).
     pathex=[".."],
     binaries=[],
-    datas=[],
+    # Ship the package's .dist-info. PyInstaller does NOT collect metadata by
+    # default — it bundles modules, not distributions — so inside the frozen exe
+    # `importlib.metadata.version("alert-triage-rag")` raises PackageNotFound
+    # and the app cannot tell which version it is. That matters here: backend.py
+    # derives the container image tag it starts (`alert-triage-rag:<version>`)
+    # from exactly that call, so without this the packaged app could not name
+    # the image it needs.
+    #
+    # Verified by building the exe both ways and listing the embedded archive
+    # with `python -m PyInstaller.utils.cliutils.archive_viewer --list`: without
+    # this line the archive holds ZERO metadata entries, with it, six. (Note a
+    # plain `grep` on the .exe cannot tell you this — onefile stores everything
+    # in a zlib-compressed PKG archive, so the strings are not searchable.)
+    #
+    # Caveat worth knowing: copy_metadata resolves the metadata from the BUILD
+    # environment, and in this repo that is the legacy alert_triage_rag.egg-info
+    # in the root rather than a .dist-info. Whatever version that says is the
+    # version the frozen app will report, so build from a clean tree.
+    datas=copy_metadata("alert-triage-rag"),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

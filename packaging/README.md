@@ -366,6 +366,33 @@ for a reason.
 
 ---
 
+## Cutting a version bump: the three places the version lives
+
+`app_version` is an enforced staleness-fingerprint field, so every release bumps
+it and every bump stales every store. Three files carry it, and only the first
+is checked automatically:
+
+| Where | What it is | Checked? |
+| --- | --- | --- |
+| `pyproject.toml` `version` | the source of truth | yes — the release workflow guards `tag == pyproject version` |
+| `docker-compose.yml` `image:` | the tag `docker compose build` produces | **no** |
+| the built installer / exe | derived at build time | derived, nothing to edit |
+
+`triage/backend.py` used to be a fourth; it now derives the tag from the
+installed version (`backend.docker_image()`), so it cannot drift. The frozen
+`.exe` can only do that because the spec ships package metadata via
+`copy_metadata` — PyInstaller bundles *modules*, not *distributions*, so without
+it `importlib.metadata.version()` raises inside the bundle and the app cannot
+name the image it needs.
+
+**`docker-compose.yml` is the one that can still silently drift.** It must equal
+`backend.docker_image()`, or the packaged app will not find the image
+`docker compose build` produced. Check them against each other when bumping:
+
+```bash
+python -c "from triage import backend; print(backend.docker_image())"
+```
+
 ## Known limitations
 
 - **The installer is unsigned.** Other machines will show a SmartScreen

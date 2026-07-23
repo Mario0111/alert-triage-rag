@@ -9,6 +9,7 @@ already there, and what the caller is then allowed to stop.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
 from typing import Any
 
 import pytest
@@ -118,3 +119,41 @@ def test_frozen_app_uses_docker_not_a_local_server(
     monkeypatch.setattr(backend, "_start_docker", lambda *_a: docker_handle)
 
     assert backend.ensure_backend("http://127.0.0.1:8000") is docker_handle
+
+
+def test_docker_image_tag_tracks_the_installed_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The image tag is derived from the package version, not written down.
+
+    This is the regression guard for a constant that used to read
+    "alert-triage-rag:0.4.0": app_version participates in the staleness
+    fingerprint, so every release bumps it, and a stale literal would make the
+    packaged app request an image tag that no longer exists.
+    """
+    monkeypatch.setattr(backend, "version", lambda _name: "9.9.9")
+    assert backend.docker_image() == "alert-triage-rag:9.9.9"
+
+
+def test_docker_image_fails_loudly_when_the_version_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No metadata means we cannot know the right image, so say so.
+
+    This is the frozen-executable case: PyInstaller collects modules, not
+    distributions, so without copy_metadata in the .spec the bundled app has no
+    version. Guessing a tag would surface as Docker's "no such image", blaming
+    Docker for a packaging mistake.
+    """
+
+    def missing(_name: str) -> str:
+        raise PackageNotFoundError(_name)
+
+    monkeypatch.setattr(backend, "version", missing)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.docker_image()
+
+    message = str(excinfo.value)
+    assert "version" in message
+    assert "package metadata" in message

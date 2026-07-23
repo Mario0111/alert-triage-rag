@@ -16,7 +16,13 @@ services:
     # tag the result with (and, once releases are published, the name to pull
     # instead — `docker compose pull` would fetch ghcr.io/OWNER/... here).
     build: .
-    image: alert-triage-rag:0.4.0
+    # MUST equal triage.backend.docker_image(), which the packaged desktop app
+    # uses to `docker run` this image: it derives the tag from the installed
+    # package version, so this tag must track pyproject.toml's version on every
+    # bump. Nothing checks it automatically (the release workflow's guard covers
+    # tag==pyproject, not compose) — verify with:
+    #   python -c "from triage import backend; print(backend.docker_image())"
+    image: alert-triage-rag:0.5.0
 
     # HOST:CONTAINER port mapping, host side pinned to 127.0.0.1.
     # The container binds 0.0.0.0 internally because it must (its own network

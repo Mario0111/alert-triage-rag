@@ -35,13 +35,18 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlparse
 
 # Must match docker-compose.yml. Kept as constants because the frozen app has no
 # compose file (and no build context) to read: `docker run` with explicit flags
 # is the one form that works from a standalone .exe. If the compose file's
 # image tag or volume name changes, change them here too.
-DOCKER_IMAGE = "alert-triage-rag:0.4.0"
+#
+# The repository name doubles as the distribution name on PyPI-style metadata —
+# the image is named after the package deliberately, so the tag can be derived
+# from the package version in `docker_image()` below.
+DOCKER_IMAGE_REPO = "alert-triage-rag"
 DOCKER_VOLUME = "alert_triage_rag_chroma-data"
 DOCKER_CONTAINER_NAME = "alert-triage-desktop-api"
 
@@ -93,6 +98,37 @@ class BackendHandle:
             # Shutting down is best-effort; a failure here must not stop the
             # app from closing.
             pass
+
+
+def docker_image() -> str:
+    """The backend image built from THIS code: ``alert-triage-rag:<version>``.
+
+    DERIVED from the installed package version, never written down. The tag used
+    to be a literal ``alert-triage-rag:0.4.0``, which is a quiet trap: the app
+    version participates in the staleness fingerprint, so *every* release bumps
+    it, and a constant left behind at the old number makes the packaged app try
+    to start an image tag that no longer exists. The symptom would be Docker
+    reporting "no such image", pointing the user at Docker rather than at the
+    real cause. Deriving it means the app can only ever ask for the image built
+    from its own code.
+
+    Raises:
+        RuntimeError: If the package version cannot be resolved, in which case
+            we genuinely do not know which image is correct. Failing here beats
+            running a guessed tag, and the message names the likely cause: a
+            frozen build assembled without its package metadata (PyInstaller
+            does not collect metadata unless the spec asks it to, which is why
+            ``packaging/alert-triage-desktop.spec`` calls ``copy_metadata``).
+    """
+    try:
+        return f"{DOCKER_IMAGE_REPO}:{version(DOCKER_IMAGE_REPO)}"
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Cannot determine the application version, so the backend image "
+            f"tag is unknown (no installed metadata for '{DOCKER_IMAGE_REPO}'). "
+            "If this is the packaged executable, it was built without its "
+            "package metadata."
+        ) from exc
 
 
 def health_ok(api_url: str, timeout: float = 2.0) -> bool:
@@ -157,7 +193,7 @@ def _start_docker(api_url: str) -> BackendHandle:
         "-p", f"127.0.0.1:{port}:8000",
         "-e", "ANTHROPIC_API_KEY",
         "-v", f"{DOCKER_VOLUME}:/data",
-        DOCKER_IMAGE,
+        docker_image(),
     ]
     result = subprocess.run(
         command,

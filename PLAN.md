@@ -470,6 +470,94 @@ anything. Both clean; the same simulation reproduces the original divergence
 Qt offscreen tests still pass. The interaction is now documented in
 pyproject.toml next to the PySide6 override so the next ignore does not repeat it.
 
+### Phase 11f — De-couple the backend image tag from the version  [x]
+Claude-owned. Found while sizing up a 0.5.0 release: backend.py hard-coded
+`DOCKER_IMAGE = "alert-triage-rag:0.4.0"`. Because app_version is an ENFORCED
+fingerprint field, EVERY release bumps the version — so that literal was
+guaranteed to go stale, and its failure mode is misleading: the packaged app
+would ask Docker for a tag that no longer exists and the user would see
+"no such image", blaming Docker for a packaging mistake.
+Delivered:
+- `backend.docker_image()` derives the tag as `<repo>:<installed version>`, so
+  the app can only ever request the image built from its own code.
+- It RAISES with a clear message when the version cannot be resolved, rather
+  than running a guessed tag. That case is real, not theoretical (below).
+- Deliberately did NOT import `fingerprint.app_version()` for this, even though
+  it is the "single source of truth" for the version: fingerprint imports
+  chunk.py, and backend.py is imported by the desktop GUI, whose whole contract
+  (asserted by the PyInstaller spec's excludes) is that it never reaches into
+  pipeline code. backend.py stays stdlib-only and calls importlib.metadata
+  directly — one extra line beats weakening the thin-client boundary.
+- packaging/alert-triage-desktop.spec now passes `copy_metadata(...)` as datas.
+  THIS WAS THE REAL FIND: PyInstaller bundles MODULES, not DISTRIBUTIONS, so a
+  frozen build has no package metadata and `importlib.metadata.version()` raises
+  inside it. The naive "just derive it from app_version()" fix would therefore
+  have shipped `alert-triage-rag:unversioned` in exactly the artifact the
+  constant exists for.
+  Proven by a CONTROLLED A/B, which is also a lesson in measurement: the first
+  attempt grepped the built .exe for the dist-info name, got zero hits, and
+  called that proof. It was not — onefile stores everything in a zlib-compressed
+  PKG archive, so NO string is greppable and the same "zero" comes back either
+  way. The valid check is to build both ways and list the embedded archive with
+  `python -m PyInstaller.utils.cliutils.archive_viewer --list`: without
+  copy_metadata the archive holds ZERO metadata entries, with it, six.
+  Caveat found while doing it: copy_metadata resolves metadata from the BUILD
+  environment, and here that is the legacy gitignored alert_triage_rag.egg-info
+  in the repo root, not a .dist-info — so whatever version that directory says
+  is the version the frozen app reports. It currently says 0.4.0 (correct), but
+  it is a build artifact that can go stale; build releases from a clean tree.
+Verified: ruff / mypy (both the normal run and the PySide6-as-Any CI simulation)
+/ 87 pytest green (+2). `docker_image()` returns "alert-triage-rag:0.4.0" from an
+installed env — identical to the old constant and to docker-compose.yml, so
+behaviour is unchanged at 0.4.0; it simply cannot rot. Frozen exe rebuilt and
+re-checked for the metadata it previously lacked.
+STILL DUPLICATED, deliberately left for the release: docker-compose.yml's
+`image: alert-triage-rag:0.4.0` is the third copy of the version. It is what
+`docker compose build` tags, so it must equal backend.docker_image() or the
+packaged app cannot find the locally built image. Bumping the version means
+editing pyproject.toml AND docker-compose.yml (the release workflow's
+tag==pyproject guard does not cover compose).
+
+### Version bump 0.4.0 -> 0.5.0  [x]
+Carries Phases 11c-11f (Windows installer, lazy CLI dispatch, the CI
+optional-extra fix, and the de-coupled backend image tag) — none of which are in
+any release: v0.4.0 was tagged before the installer existed.
+Only TWO live config sites hold the version; every other "0.4.0" in the repo is
+prose, history, or an example and was deliberately left alone:
+- pyproject.toml `version` (the source of truth, guarded by the release
+  workflow's tag==pyproject check)
+- docker-compose.yml `image:` (NOT guarded by anything — it must equal
+  backend.docker_image(), or the packaged app cannot find the image
+  `docker compose build` produced; now carries a comment saying so)
+triage/backend.py needed no edit — Phase 11f made it derive the tag, and it
+reported `alert-triage-rag:0.5.0` immediately after the bump, which is the
+de-coupling paying for itself on its first release.
+Done so far: both sites bumped; the dev venv's metadata refreshed
+(`pip install -e . --no-deps --force-reinstall`, --no-deps to protect the
+Smart App Control numpy 2.4.6 pin, which survived); ruff / mypy (normal + the
+PySide6-as-Any CI simulation) / 87 pytest green; compose tag and derived tag
+verified equal. The store staleness fired exactly as designed —
+"app_version: store has '0.4.0', code has '0.5.0' ... Re-run `triage ingest`" —
+and was rebuilt.
+Both distributable artifacts rebuilt at 0.5.0 and verified:
+- dist/alert-triage-desktop.exe (46.7 MB). The frozen build's bundled metadata
+  was EXTRACTED from its archive and reads "Version: 0.5.0" — so the packaged
+  app now resolves its own version and asks Docker for
+  `alert-triage-rag:0.5.0`. That is Phase 11f proven in the exact artifact it
+  was written for, and it could not have worked before copy_metadata.
+- dist/alert-triage-rag-0.5.0-setup.exe (518.7 MB, 2022 MB payload, 13 min).
+  Installed the thin tier from it: reports version 0.5.0, docker_image() returns
+  alert-triage-rag:0.5.0 (matching docker-compose.yml), Apps & Features shows
+  "Alert Triage RAG 0.5.0". Uninstalled clean — directory gone, entry removed,
+  PATH untouched, store preserved.
+NOTE: dist/ also still holds the superseded alert-triage-rag-0.4.0-setup.exe.
+Left in place rather than deleted (its payload is gone, so it is not
+regenerable without checking out the old commit), but it must NOT be the file
+attached to a v0.5.0 Release.
+REMAINING before the tag: commit, tag v0.5.0, push the tag, then attach
+dist/alert-triage-rag-0.5.0-setup.exe to the GitHub Release by hand — the
+installer is not built in CI (needs a Windows runner; parked).
+
 ### Phase 12 — SIEM homelab  [ ]
 Paired — the normalizer shapes retrieval input. Wazuh manager VM +
 telemetry sources feeding it; custom integratord script POSTs qualifying
