@@ -78,7 +78,7 @@ Pick one of three tiers on the *Select Components* page:
 |---|---|---|
 | **Desktop app** *(recommended)* | 2.0 GB | Native window + the full local pipeline. Launching it starts its own backend — no Docker, no terminal. |
 | **Command line only** | 1.4 GB | Same pipeline, no GUI. Adds `triage` to your PATH (optional). |
-| **Thin client** | 0.7 GB | The GUI alone, pointed at a remote or containerised API via `--api-url` / `TRIAGE_API_URL`. |
+| **Thin client** | 0.7 GB | The GUI and the `triage` command alone, pointed at a remote or containerised API via `--api-url` / `TRIAGE_API_URL`. `ingest`/`query`/`serve` need the pipeline and say so. |
 
 Sizes are measured, not estimated. The local pipeline (torch, transformers,
 chromadb, onnxruntime and the embedding model) is 1.3 GB of that and the Qt GUI

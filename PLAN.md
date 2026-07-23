@@ -406,6 +406,70 @@ and uninstalled:
   refused with exit code 1 and no folder created, in SILENT mode — i.e. the
   PrepareToInstall path, not just the wizard page.
 
+### Phase 11d — Lazy CLI dispatch  [x]
+Claude-owned (cli.py is CLI argument handling). The follow-up Phase 11c
+deliberately parked: cli.py imported ingest/query/serve at module level, so the
+`triage` command needed torch and the installer's thin-client tier could ship
+neither a working `triage` nor a PATH entry.
+Delivered:
+- cli.py now holds a REGISTRY of verb -> (module NAME, one-line summary) and
+  imports nothing from the subcommands at load time. The top-level parser is
+  built from those strings alone, so `triage --help`, `triage` (no verb) and
+  `triage <unknown>` never touch the pipeline; a real verb is dispatched by
+  importlib.import_module and gets a parser built from that module's own
+  add_arguments — the same pair `python -m triage.<verb>` uses, untouched.
+- ImportError on dispatch is TRANSLATED, not propagated: lazy imports make a
+  partial install reachable, so `triage ingest` on a thin client explains that
+  the pipeline is absent and points at `triage desktop --api-url <url>`,
+  instead of a bare ModuleNotFoundError naming a transitive dependency. Same
+  shape as desktop_launch.py's "[desktop] extra" message.
+- Installer restriction LIFTED: triage.cmd moved from `Components: pipeline` to
+  `core`, and the add-to-PATH task is now offered on every tier.
+- 6 new tests (79 -> 85), of which two run in a SUBPROCESS by necessity: this
+  pytest session already imports torch transitively, so in-process sys.modules
+  proves nothing about what cli.py drags in. A fresh interpreter is the only
+  honest measurement.
+Measured: `import triage.cli` 0.09 s vs `import triage.query` 7.36 s — an ~80x
+cut on every help/dispatch invocation, and the reason a torch-free `triage` is
+possible at all.
+Verified: ruff / mypy / 85 pytest green; all four verbs' `--help` render their
+real option sets under the right prog name; an unknown verb exits 2 listing the
+valid choices; thin-tier install re-verified after rebuilding the payload.
+
+### Phase 11e — CI fix: optional-extra type divergence  [x]
+Claude-owned. The first two pushes after the desktop app went in (46f8d9f and
+2d0cf8b) both FAILED CI with the same one-line error, and it is a genuinely
+instructive one:
+
+    triage/desktop.py:273: error: Unused "type: ignore" comment  [unused-ignore]
+
+Root cause — AN OPTIONAL DEPENDENCY IS TYPED DIFFERENTLY IN THE TWO
+ENVIRONMENTS. `closeEvent(self, event: object)` widened Qt's real parameter
+type, so `super().closeEvent(event)` was an arg-type error and carried a
+`# type: ignore[arg-type]`. On the DEV machine PySide6 is installed (the
+[desktop] extra), mypy sees Qt's real types, the error is real and the ignore is
+used — green. In CI, which installs `.[dev]` only by deliberate decision (Phase
+11b: PySide6 is heavy and GUI-only), PySide6 is missing, the
+`ignore_missing_imports` override makes it Any, no arg-type error ever occurs,
+the ignore suppresses nothing, and `warn_unused_ignores = true` fails the build.
+Green locally, red on push, every time.
+
+Fix: annotate PRECISELY instead of suppressing — `event: QCloseEvent` (importing
+it from PySide6.QtGui). A correct annotation is correct under both views: with
+real types it matches, with Any it is Any. The ignore is gone, and it was the
+only `# type: ignore` in triage/.
+
+Deliberately NOT done: adding PySide6 to CI to make the environments match. That
+would reverse the recorded Phase 11b decision (heavy, GUI-only) to fix a problem
+that precise typing already solves.
+Verified BOTH views on the dev machine, which is the real lesson: mypy run
+normally (PySide6 present) and again with `follow_imports = skip` for `PySide6.*`
+in a throwaway config, which reproduces CI's Any-typed view without uninstalling
+anything. Both clean; the same simulation reproduces the original divergence
+(with `event: object`: local errors, CI-sim does not). ruff + 85 pytest green,
+Qt offscreen tests still pass. The interaction is now documented in
+pyproject.toml next to the PySide6 override so the next ignore does not repeat it.
+
 ### Phase 12 — SIEM homelab  [ ]
 Paired — the normalizer shapes retrieval input. Wazuh manager VM +
 telemetry sources feeding it; custom integratord script POSTs qualifying
@@ -964,11 +1028,7 @@ produces a grounded verdict end-to-end without a human typing anything.
   ANSWERED for the Windows installer at Phase 11c: its uninstaller ASKS,
   defaulting to No (deleting silently would cost a full re-download and
   re-embed on reinstall). Still open for the pipx path.
-- Make cli.py lazy-import its subcommands (ingest/query/serve are imported at
-  module level today, so the `triage` command needs torch). Surfaced by Phase
-  11c: it is the only reason the installer's thin-client tier cannot ship a
-  working `triage` command or a PATH entry. Deliberately kept out of the
-  installer work — it is a change to CLI plumbing, testable on its own.
+- Make cli.py lazy-import its subcommands — DONE (Phase 11d below).
 - DEFERRED TO FINAL POLISH (Phase 13) — generation model + prompt tuning:
   - Sonnet vs Opus for DEFAULT_GEN_MODEL. Currently claude-opus-4-8. The
     generation step is grounded synthesis over ~5 retrieved documents

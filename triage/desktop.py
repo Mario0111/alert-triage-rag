@@ -37,6 +37,7 @@ import urllib.error
 from typing import Any
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -265,12 +266,19 @@ class TriageWindow(QMainWindow):
         self._submit.setEnabled(True)
         self._set_status(message, error=True)
 
-    def closeEvent(self, event: object) -> None:
+    # `event` is annotated with Qt's real type rather than `object`. The loose
+    # annotation forced a `# type: ignore[arg-type]` on the super() call, and
+    # that ignore was only ever CORRECT when PySide6 was installed: CI installs
+    # [dev] without the optional [desktop] extra, so PySide6 resolves to Any
+    # there, the arg-type error never occurs, and `warn_unused_ignores` failed
+    # the build on an ignore that is genuinely needed locally. Naming the type
+    # removes the error in both environments instead of papering over one.
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Shut down only a backend this app started."""
         if self._backend_handle is not None:
             self._backend_handle.stop()
             self._backend_handle = None
-        super().closeEvent(event)  # type: ignore[arg-type]
+        super().closeEvent(event)
 
     # --- actions -------------------------------------------------------------
 

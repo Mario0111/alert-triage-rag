@@ -181,12 +181,16 @@ Source: "{#Payload}\models\*"; DestDir: "{app}\models"; \
         Flags: ignoreversion recursesubdirs createallsubdirs; Components: pipeline
 
 ; --- The CLI shim ----------------------------------------------------------
-; Pipeline-only, and that is a real constraint rather than tidiness:
-; triage/cli.py imports ingest, query and serve at module level, so the `triage`
-; command needs torch. A thin-client install that put a broken `triage` on PATH
-; would be worse than not having one. (Making cli.py lazy-import its
-; subcommands would lift this restriction - a worthwhile separate change.)
-Source: "{#Payload}\triage.cmd"; DestDir: "{app}"; Flags: ignoreversion; Components: pipeline
+; CORE, i.e. every tier including the thin client. This used to be
+; pipeline-only for a real reason: cli.py imported ingest/query/serve at module
+; level, so merely running `triage --help` needed torch and a thin install
+; would have shipped a broken command. cli.py now dispatches LAZILY - it holds
+; a registry of verb -> module NAME and imports a verb's module only when that
+; verb runs - so `triage --help` and `triage desktop` work with no pipeline
+; present, and the three pipeline verbs exit with an explanation rather than a
+; ModuleNotFoundError. That makes the shim safe everywhere, and it is what lets
+; a thin-client user run `triage desktop --api-url <remote>` from a terminal.
+Source: "{#Payload}\triage.cmd"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme; Components: core
 
@@ -239,10 +243,11 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; \
 
 [Tasks]
 ; Optional, and unticked by default: modifying PATH is a change to the user's
-; environment, so it should be a decision, not a side effect. Offered only with
-; the pipeline component, for the same reason the shim is pipeline-only.
+; environment, so it should be a decision, not a side effect. Offered on every
+; tier now that cli.py dispatches lazily (see the triage.cmd note above) - a
+; thin-client user gets a working `triage --help` and `triage desktop`.
 Name: "addtopath"; Description: "Add the &triage command to my PATH"; \
-      Components: pipeline; Flags: unchecked
+      Flags: unchecked
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; \
       Components: gui; Flags: unchecked
 

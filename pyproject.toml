@@ -192,6 +192,18 @@ warn_unused_ignores = true
 # silence typos in OUR import statements. PySide6 is here for the same reason
 # AND so mypy passes whether or not the optional [desktop] extra is installed
 # (a plain [dev] checkout has no PySide6).
+#
+# GOTCHA THIS COMBINATION CREATES, worth knowing before adding a `# type:
+# ignore` anywhere near PySide6: an OPTIONAL dependency is typed differently in
+# the two environments. Locally the extra is installed, so mypy sees Qt's real
+# types; in CI (which installs .[dev] only) PySide6 is missing and this override
+# makes it Any. An ignore that is genuinely required locally therefore suppresses
+# NOTHING in CI, and `warn_unused_ignores = true` below turns that into a build
+# failure — green on the dev machine, red on push. That is exactly how
+# desktop.py's `closeEvent` broke CI. The fix is to annotate precisely (name the
+# real Qt type) rather than to suppress, since a correct annotation is correct
+# under both views. To reproduce CI's view locally without uninstalling
+# anything, run mypy with `follow_imports = skip` for `PySide6.*`.
 module = ["sentence_transformers.*", "transformers.*", "PySide6.*"]
 ignore_missing_imports = true
 

@@ -280,11 +280,14 @@ checkout ever moves somewhere deeper, the build stops and says so — pass
   use `python -m pytest`). A `.cmd` is plain text, invokes the interpreter
   directly, and works from any install directory via `%~dp0`. The generated
   `Scripts\` directory is deleted from the payload.
-- **`triage.cmd` and the PATH task are pipeline-only.** `triage/cli.py` imports
-  `ingest`, `query` and `serve` at module level, so the command needs torch. A
-  thin install must not put a broken `triage` on PATH. (Making `cli.py`
-  lazy-import its subcommands would lift this — a worthwhile separate change,
-  deliberately not folded into the installer work.)
+- **`triage.cmd` and the PATH task ship on every tier.** They used to be
+  pipeline-only, because `cli.py` imported `ingest`/`query`/`serve` at module
+  level and so needed torch just to print help. `cli.py` now dispatches
+  lazily — it holds a registry of verb → module *name* and imports a verb's
+  module only when that verb runs (`import triage.cli` measured 0.09 s vs 7.36 s
+  for `import triage.query`). On a thin install `triage --help` and
+  `triage desktop --api-url <remote>` work, and the three pipeline verbs exit
+  with an explanation instead of a `ModuleNotFoundError`.
 - **Two GUI shortcuts, selected by `Components: gui and pipeline` vs
   `gui and not pipeline`.** With the pipeline present, `triage/backend.py`
   probes `/health` and, finding nothing, spawns
